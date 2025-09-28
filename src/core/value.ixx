@@ -2,7 +2,7 @@ export module meow.core.value;
 
 #include "common/pch.h"
 
-// struct MeowObject;
+import meow.common.forward;
 
 using Bool = bool;
 using Int64 = int64_t;
