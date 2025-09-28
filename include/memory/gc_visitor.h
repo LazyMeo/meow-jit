@@ -1,6 +1,13 @@
-export module meow.core:gc_visitor;
+/**
+ * @file gc_visitor.h
+ * @author LazyPaws
+ * @copyright Copyright(c) 2025 LazyPaws - All rights reserved
+ */
 
-import :forward;
+#pragma once
+
+class Value;
+struct MeowObject;
 
 /**
  * @struct GCVisitor

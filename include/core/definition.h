@@ -1,16 +1,14 @@
 /**
- * @file definition.ixx
+ * @file definition.h
  * @author LazyPaws
  * @copyright Copyright(c) 2025 LazyPaws - All rights reserved
  */
 
-export module meow.core:definition;
+#pragma once
 
 #include "common/pch.h"
-
-import :meow_object;
-import :gc_visitor;
-import :value;
+#include "core/value.h"
+#include "core/meow_object.h"
 
 /**
  * @class ObjArray

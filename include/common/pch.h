@@ -1,3 +1,9 @@
+/**
+ * @file pch.h
+ * @author LazyPaws
+ * @copyright Copyright(c) 2025 LazyPaws - All rights reserved
+ */
+
 #pragma once
 
 // Containers

@@ -1,6 +1,12 @@
-export module meow.core:meow_object;
+/**
+ * @file meow_object.h
+ * @author LazyPaws
+ * @copyright Copyright(c) 2025 LazyPaws - All rights reserved
+ */
 
-import :forward;
+#pragma once
+
+struct GCVisitor;
 
 /**
  * @struct MeowObject
