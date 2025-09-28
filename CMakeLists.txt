@@ -1,3 +1,5 @@
+# CMakeLists.txt
+
 # Phiên bản CMake tối thiểu để dùng C++ Modules
 cmake_minimum_required(VERSION 3.28)
 
@@ -9,27 +11,28 @@ set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
 
-# Tìm các file nguồn (.cpp) và module implementation (.cppm)
-file(GLOB_RECURSE MEOW_IMPLEMENT_SOURCES
+# Tìm các file nguồn .cpp thông thường (nếu có, ví dụ main.cpp)
+file(GLOB_RECURSE MEOW_SOURCES
     "src/*.cpp"
-    "src/*.cppm"
 )
 
-# Tìm các file module interface (.ixx)
-file(GLOB_RECURSE MEOW_MODULE_INTERFACES
+# Tìm TẤT CẢ các file module (cả interface .ixx và implementation .cppm)
+file(GLOB_RECURSE MEOW_MODULE_SOURCES
     "src/*.ixx"
+    "src/*.cppm"
 )
 
 # Tạo file Executable chính
 add_executable(meow)
 
-# Thêm tất cả các file implementation vào target
+# Thêm các file nguồn thông thường vào target
 target_sources(meow PRIVATE
-    ${MEOW_IMPLEMENT_SOURCES}
+    ${MEOW_SOURCES}
 )
 
+# Thêm TẤT CẢ các file module vào FILE_SET
 target_sources(meow PUBLIC FILE_SET CXX_MODULES FILES
-    ${MEOW_MODULE_INTERFACES}
+    ${MEOW_MODULE_SOURCES}
     BASE_DIRS "${CMAKE_CURRENT_SOURCE_DIR}/src"
 )
 
