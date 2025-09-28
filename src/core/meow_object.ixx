@@ -1,6 +1,6 @@
-export module meow.core.meow_object;
+export module meow.core:object;
 
-import meow.common.forward;
+import :forward;
 
 /**
  * @struct MeowObject

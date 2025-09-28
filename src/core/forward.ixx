@@ -1,4 +1,4 @@
-export module meow.common.forward;
+export module meow.core:forward;
 
 export class Value;
 export struct MeowObject;

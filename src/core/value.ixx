@@ -1,8 +1,8 @@
-export module meow.core.value;
+export module meow.core:value;
 
 #include "common/pch.h"
 
-import meow.common.forward;
+import :forward;
 
 using Bool = bool;
 using Int64 = int64_t;
