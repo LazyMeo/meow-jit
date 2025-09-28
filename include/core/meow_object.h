@@ -12,7 +12,7 @@ struct GCVisitor;
  * @struct MeowObject
  * @brief Đại diện cho mọi kiểu dữ liệu Object trong TrangMeo
  */
-export struct MeowObject {
+struct MeowObject {
     virtual ~MeowObject() = default;
 
     /**

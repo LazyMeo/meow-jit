@@ -12,11 +12,11 @@
  * @class Value
  * @brief Đại diện cho kiểu dữ liệu động trong TrangMeo
  */
-export class Value {
+class Value {
 private:
     // NOTE: Đoạn này hơi cân nhắc tí, vì tagged-union có thể nhanh hơn std::variant
     // Nhưng, bottle-neck không nằm ở Value, không ở std::variant
-    // Nếu tốt hơn có thể dùng NaN-Boxing nhưng chỉ dùng được trên 64-bit
+    // Nếu tốt hơn có thể dùng NaN-Boxing nhưng chỉ dùng được trên 64-bit, không dùng trên 32-bit được
     // Khi thực sự đây là bottle-neck thì mới thay đổi
 
     struct MeowObject;

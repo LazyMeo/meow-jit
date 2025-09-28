@@ -17,7 +17,7 @@
  * @class ObjArray
  * @brief Định nghĩa của kiểu dữ liệu Array trong TrangMeo
  */
-export class ObjArray : public MeowObject {
+class ObjArray : public MeowObject {
 private:
     std::vector<Value> elements_;
     using Iterator = std::vector<Value>::iterator;
@@ -206,7 +206,7 @@ public:
  * @class ObjString
  * @brief Định nghĩa của kiểu dữ liệu String trong TrangMeo
  */
-export class ObjString : public MeowObject {
+class ObjString : public MeowObject {
 private:
     std::string data_;
     using ConstIterator = std::string::const_iterator;
@@ -287,7 +287,7 @@ public:
  * @class ObjHash
  * @brief Định nghĩa của kiểu dữ liệu Hash trong TrangMeo
  */
-export class ObjHash : public MeowObject {
+class ObjHash : public MeowObject {
 private:
     std::unordered_map<String, Value> fields_;
     using Iterator = std::unordered_map<String, Value>::iterator;

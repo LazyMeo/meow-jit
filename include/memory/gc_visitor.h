@@ -13,7 +13,7 @@ struct MeowObject;
  * @struct GCVisitor
  * @brief Lớp trừu tượng cho GC, dùng để đi duyệt và đánh dấu các Object, Value
  */
-export struct GCVisitor {
+struct GCVisitor {
     virtual ~GCVisitor() = default;
 
     /**
