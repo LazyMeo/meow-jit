@@ -1,6 +1,6 @@
-export module meow.memory.gc_visitor;
+export module meow.core:gc_visitor;
 
-import meow.core;
+import :forward;
 
 /**
  * @struct GCVisitor

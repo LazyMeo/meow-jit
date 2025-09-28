@@ -1,6 +1,6 @@
-module meow.core.definition;
+module meow.core:definition;
 
-import meow.memory.gc_visitor;
+import meow.core;
 
 void ObjArray::trace(GCVisitor& visitor) noexcept {
     for (auto& element : elements_) {

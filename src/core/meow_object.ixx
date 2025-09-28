@@ -1,4 +1,4 @@
-export module meow.core:object;
+export module meow.core:meow_object;
 
 import :forward;
 

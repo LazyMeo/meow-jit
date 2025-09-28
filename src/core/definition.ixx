@@ -4,13 +4,11 @@
  * @copyright Copyright(c) 2025 LazyPaws - All rights reserved
  */
 
-export module meow.core.definition;
+export module meow.core:definition;
 
 #include "common/pch.h"
 
-import meow.core.value;
-import meow.core.meow_object;
-import meow.memory.gc_visitor;
+import meow.core;
 
 /**
  * @class ObjArray
