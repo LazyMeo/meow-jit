@@ -8,7 +8,9 @@ export module meow.core:definition;
 
 #include "common/pch.h"
 
-import meow.core;
+import :meow_object;
+import :gc_visitor;
+import :value;
 
 /**
  * @class ObjArray
