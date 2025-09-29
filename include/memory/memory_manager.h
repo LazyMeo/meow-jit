@@ -7,7 +7,6 @@ struct ExecutionContext;
 class MemoryManager {
 private:
     std::unique_ptr<GarbageCollector> gc_;
-    ExecutionContext* context_;
 
     size_t gc_threshold_;
     size_t object_allocated_;
@@ -36,11 +35,6 @@ public:
     }
 
     inline void collect() noexcept {
-        if (!context_) return;
-        object_allocated_ = gc_->collect(*context_);
-    }
-
-    void set_context(ExecutionContext* context) {
-        context_ = context;
+        object_allocated_ = gc_->collect();
     }
 };

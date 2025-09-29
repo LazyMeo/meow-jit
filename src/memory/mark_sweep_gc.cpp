@@ -14,9 +14,8 @@ void MarkSweepGC::register_object(MeowObject* object) noexcept {
     metadata_.emplace(object, GCMetadata{});
 }
 
-// size_t MarkSweepGC::collect(ExecutionContext& context) noexcept {
+// size_t MarkSweepGC::collect() noexcept {
 //     std::cout << "[collect] Đang collect các object" << std::endl;
-//     this->context_ = &context;
 
 //     context_->trace_roots(*this);
 
@@ -32,33 +31,15 @@ void MarkSweepGC::register_object(MeowObject* object) noexcept {
 //             it = metadata_.erase(it);
 //         }
 //     }
-    
-//     this->context_ = nullptr;
 
 //     return metadata_.size();
 // }
 
-// void MarkSweepGC::visit_value(Value& value) noexcept {
-//     if (value.is<Instance>())      
-//         mark(value.get<Instance>());
-//     else if (value.is<Function>()) 
-//         mark(value.get<Function>());
-//     else if (value.is<Class>())    
-//         mark(value.get<Class>());
-//     else if (value.is<Module>())   
-//         mark(value.get<Module>());
-//     else if (value.is<BoundMethod>())    
-//         mark(value.get<BoundMethod>());
-//     else if (value.is<Proto>())    
-//         mark(value.get<Proto>());
-//     else if (value.is<Upvalue>()) 
-//         mark(value.get<Upvalue>());
-//     else if (value.is<Array>()) {
-//         mark(value.get<Array>());
-//     } else if (value.is<Object>()) {
-//         mark(value.get<Object>());
-//     }
-// }
+void MarkSweepGC::visit_value(Value& value) noexcept {
+    if (value.is_object()) {
+        mark(value.as_object());
+    }
+}
 
 void MarkSweepGC::visit_object(MeowObject* object) noexcept {
     mark(object);

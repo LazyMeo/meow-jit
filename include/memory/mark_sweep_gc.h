@@ -16,16 +16,16 @@ private:
     ExecutionContext* context_ = nullptr;
 
 public:
+    MarkSweepGC(ExecutionContext* context): context_(context) {}
     ~MarkSweepGC() override;
 
     void register_object(MeowObject* object) noexcept override;
 
-    size_t collect(ExecutionContext& context) noexcept override;
+    size_t collect() noexcept override;
 
     void visit_value(Value& value) noexcept override;
 
     void visit_object(MeowObject* object) noexcept override;
-
 private:
     void mark(MeowObject* object);
 };

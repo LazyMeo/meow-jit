@@ -1,7 +1,8 @@
 #pragma once
 
+#include <cstddef>
+
 struct MeowObject;
-struct ExecutionContext;
 
 /**
  * @class GarbageCollector
@@ -19,7 +20,6 @@ public:
     
     /**
      * @brief Dọn dẹp các object không còn dược sử dụng
-     * @param[in] context Môi trường đang thực thi và cần dọn dẹp
      */
-    virtual unsigned long collect(ExecutionContext& context) noexcept = 0;
+    virtual size_t collect() noexcept = 0;
 };

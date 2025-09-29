@@ -13,7 +13,7 @@ class MemoryManager;
  */
 class ModuleManager {
 public:
-    Module load_module(String module_path, String importer_path);
+    Module load_module(String module_path, String importer_path, MemoryManager* heap, MeowEngine* engine);
 
     inline void reset_module_cache() noexcept {
         module_cache_.clear();
@@ -21,14 +21,6 @@ public:
 
     inline void add_cache(String name, const Module& mod) {
         module_cache_[name] = mod;
-    }
-
-    inline void set_engine(MeowEngine* engine) noexcept {
-        engine_ = engine;
-    }
-
-    inline void set_heap(MemoryManager* heap) noexcept {
-        heap_ = heap;
     }
 private:
     std::unordered_map<String, Module> module_cache_;

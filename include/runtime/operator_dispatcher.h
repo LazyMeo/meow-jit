@@ -25,7 +25,7 @@ private:
     UnaryOpFunction unary_dispatch_table_[NUM_OPCODES][NUM_VALUE_TYPES];
 
 public:
-    OperatorDispatcher();
+    OperatorDispatcher(MemoryManager* heap);
 
     inline BinaryOpFunction* find(OpCode op_code, ValueType left, ValueType right) {
         BinaryOpFunction* function = &binary_dispatch_table_[static_cast<size_t>(op_code)][static_cast<size_t>(static_cast<size_t>(left))][static_cast<size_t>(right)];
@@ -35,9 +35,5 @@ public:
     inline UnaryOpFunction* find(OpCode op_code, ValueType right) {
         UnaryOpFunction* function = &unary_dispatch_table_[static_cast<size_t>(op_code)][static_cast<size_t>(right)];
         return (*function) ? function : nullptr;
-    }
-
-    inline void setMemoryManager(MemoryManager* heap) noexcept {
-        heap_ = heap;
     }
 };

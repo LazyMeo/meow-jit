@@ -13,10 +13,12 @@ struct VMArgs {
     std::string entry_path;
 };
 
-class ExecutionContext;
+struct ExecutionContext;
+struct BuiltinRegistry;
 class MemoryManager;
 class ModuleManager;
 class OperatorDispatcher;
+
 
 /**
  * @class MeowVM
@@ -37,6 +39,7 @@ public:
 private:
     // Các thành phần chính của MeowVM
     std::unique_ptr<ExecutionContext> context_;
+    std::unique_ptr<BuiltinRegistry> builtins_;
     std::unique_ptr<MemoryManager> heap_;
     std::unique_ptr<ModuleManager> op_dispatcher_;
 

@@ -8,6 +8,8 @@
 
 #include "common/pch.h"
 
+struct MeowObject;
+
 /**
  * @class Value
  * @brief Đại diện cho kiểu dữ liệu động trong TrangMeo
@@ -18,8 +20,6 @@ private:
     // Nhưng, bottle-neck không nằm ở Value, không ở std::variant
     // Nếu tốt hơn có thể dùng NaN-Boxing nhưng chỉ dùng được trên 64-bit, không dùng trên 32-bit được
     // Khi thực sự đây là bottle-neck thì mới thay đổi
-
-    struct MeowObject;
 
     using Null = std::monostate;
     using Bool = bool;
