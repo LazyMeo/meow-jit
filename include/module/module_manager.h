@@ -1,7 +1,8 @@
 #pragma once
 
 #include "common/pch.h"
-#include "core/definition.h"
+#include "core/objects/module.h"
+#include "common/type.h"
 
 class MeowEngine;
 class MemoryManager;

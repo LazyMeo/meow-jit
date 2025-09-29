@@ -10,7 +10,7 @@ class Chunk;
 class Chunk {
     friend class BytecodeParser; 
     friend class ObjFunctionProto;
-    friend std::string disassemble_chunk(const Chunk& chunk) noexcept;
+    // friend std::string disassemble_chunk(const Chunk& chunk) noexcept;
 public:
     Chunk() = default;
 
@@ -19,7 +19,6 @@ public:
     }
     
     inline void write_short(uint16_t value, size_t line) noexcept {
-        size_t currentSize = code_.size();
         if (value < 128) {
             code_.push_back(static_cast<uint8_t>(value));
         } else {
@@ -29,14 +28,13 @@ public:
     }
 
     inline void write_address(uint16_t address, size_t line) noexcept {
-        size_t currentSize = code_.size();
         code_.push_back(static_cast<uint8_t>(address & 0xFF));
         code_.push_back(static_cast<uint8_t>((address >> 8) & 0xFF));
     }
 
     inline size_t add_constant(Value value) noexcept {
-        constant_pool.push_back(value);
-        return constant_pool.size() - 1;
+        constant_pool_.push_back(value);
+        return constant_pool_.size() - 1;
     }
     inline size_t get_code_size() const noexcept { 
         return code_.size(); 
@@ -45,15 +43,15 @@ public:
         return code_.empty();
     }
     inline size_t get_pool_size() const noexcept {
-        return constant_pool.size();
+        return constant_pool_.size();
     }
     inline bool is_pool_empty() const noexcept {
-        return constant_pool.empty();
+        return constant_pool_.empty();
     }
     inline Value get_constant(size_t index) const { 
-        return constant_pool[index]; 
+        return constant_pool_[index]; 
     }
 private:
     std::vector<uint8_t> code_;
-    std::vector<Value> constant_pool;
+    std::vector<Value> constant_pool_;
 };
