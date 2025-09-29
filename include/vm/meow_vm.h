@@ -46,4 +46,5 @@ private:
     VMArgs args_;
 
     void prepare() noexcept;
+    void run();
 };

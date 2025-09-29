@@ -15,6 +15,29 @@ void MeowVM::prepare() noexcept {
     
 }
 
+void MeowVM::interpret() noexcept {
+    prepare();
+    try {
+        run();
+    } catch (std::exception& e) {
+
+    }
+}
+
+void MeowVM::run() {
+
+// #define DISPATCH() goto *labels[*pc]
+
+// void run(bytecode_t* bc) {
+//     uint8_t* pc = bc->code;
+//     DISPATCH();
+
+//     op_add:
+//         // xử lý ADD
+//         pc++;
+//         DISPATCH();
+}
+
 
 
 // #include "vm/meow_vm.h"
