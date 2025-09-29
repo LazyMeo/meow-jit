@@ -28,13 +28,13 @@ public:
     OperatorDispatcher();
 
     inline BinaryOpFunction* find(OpCode op_code, ValueType left, ValueType right) {
-        BinaryOpFunction* func = &binary_dispatch_table_[static_cast<size_t>(op_code)][left][right];
-        return (*func) ? func : nullptr;
+        BinaryOpFunction* function = &binary_dispatch_table_[static_cast<size_t>(op_code)][static_cast<size_t>(static_cast<size_t>(left))][static_cast<size_t>(right)];
+        return (*function) ? function : nullptr;
     }
 
     inline UnaryOpFunction* find(OpCode op_code, ValueType right) {
-        UnaryOpFunction* func = &unary_dispatch_table_[static_cast<size_t>(op_code)][right];
-        return (*func) ? func : nullptr;
+        UnaryOpFunction* function = &unary_dispatch_table_[static_cast<size_t>(op_code)][static_cast<size_t>(right)];
+        return (*function) ? function : nullptr;
     }
 
     inline void setMemoryManager(MemoryManager* heap) noexcept {
