@@ -7,7 +7,7 @@
 struct ExecutionContext;
 
 struct GCMetadata {
-    bool is_marked = false;
+    bool is_marked_ = false;
 };
 
 class MarkSweepGC : public GarbageCollector, public GCVisitor {
@@ -24,8 +24,8 @@ public:
 
     void visit_value(Value& value) noexcept override;
 
-    void visit_object(MeowObject* obj) noexcept override;
+    void visit_object(MeowObject* object) noexcept override;
 
 private:
-    void mark(MeowObject* obj);
+    void mark(MeowObject* object);
 };
