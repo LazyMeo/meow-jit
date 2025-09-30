@@ -34,9 +34,7 @@ public:
         return closed_;
     }
 
-    inline void trace(GCVisitor& visitor) const noexcept override {
-        visitor.visit_value(closed_);
-    }
+    void trace(GCVisitor& visitor) const noexcept override;
 };
 
 class BytecodeParser;
@@ -47,7 +45,6 @@ private:
     size_t num_upvalues_;
     String name_;
     Chunk chunk_;
-    Module module_;
     std::vector<UpvalueDesc> upvalueDescs;
 public:
 
@@ -78,12 +75,7 @@ public:
         return upvalueDescs.size();
     }
 
-    inline void trace(GCVisitor& visitor) const noexcept override {
-        for (auto& constant : chunk_.constant_pool_) {
-            visitor.visit_value(constant);
-        }
-        // visitor.visit_object(module_);
-    }
+    void trace(GCVisitor& visitor) const noexcept override;
 };
 
 class ObjClosure : public MeowObject {
@@ -105,10 +97,5 @@ public:
         upvalues_[index] = upvalue;
     }
 
-    inline void trace(GCVisitor& visitor) const noexcept override {
-        visitor.visit_object(proto_);
-        for (auto& upvalue : upvalues_) {
-            visitor.visit_object(upvalue);
-        }
-    }
+    void trace(GCVisitor& visitor) const noexcept override;
 };

@@ -81,5 +81,5 @@ public:
      * @param[in, out] visitor Đối tượng để đi qua từng object, value mà mảng khai báo để đánh dấu
      * @note Chuỗi này không cần trace
      */
-    void trace([[maybe_unused]] GCVisitor& visitor) const noexcept override {}
+    inline void trace([[maybe_unused]] GCVisitor& visitor) const noexcept override {}
 };

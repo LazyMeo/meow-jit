@@ -5,24 +5,22 @@
 #include "core/meow_object.h"
 #include "memory/gc_visitor.h"
 #include "common/type.h"
-#include "core/objects/string.h"
-#include "core/objects/function.h"
 
 class ObjModule : public MeowObject {
 private:
+    enum class State { EXECUTING, EXECUTED };
+
     String filename_;
     String filepath_;
     std::unordered_map<String, Value> globals_;
     std::unordered_map<String, Value> exports_;
     Proto main_proto_;
 
-    bool has_main_ = false;
-    bool is_executing_ = false;
-    bool is_executed_ = false;
+    State state;
 public:
 
-    ObjModule(String filename, String filepath, bool binary = false)
-        : filename_(filename), filepath_(filepath) {}
+    ObjModule(String filename, String filepath, Proto main_proto = nullptr)
+        : filename_(filename), filepath_(filepath), main_proto_(main_proto) {}
 
     inline String get_file_name() const noexcept {
         return filename_;
@@ -62,26 +60,27 @@ public:
 
     inline void set_main_proto(Proto proto) noexcept {
         main_proto_ = proto;
-        has_main_ = true;
     }
 
     inline bool is_has_main() const noexcept {
-        return has_main_;
+        return main_proto_ != nullptr;
+    }
+
+    inline void set_execution() noexcept {
+        state = State::EXECUTING;
+    }
+
+    inline void set_executed() noexcept {
+        state = State::EXECUTED;
     }
 
     inline bool is_executing() const noexcept {
-        return is_executing_;
+        return state == State::EXECUTING;
     }
 
     inline bool is_executed() const noexcept {
-        return is_executed_;
+        return state == State::EXECUTED;
     }
 
-    inline void trace(GCVisitor& visitor) const noexcept override {
-        visitor.visit_object(filename_);
-        visitor.visit_object(filepath_);
-        for (auto& pair : globals_) visitor.visit_value(pair.second);
-        for (auto& pair : exports_) visitor.visit_value(pair.second);
-        visitor.visit_object(main_proto_);
-    }
+    void trace(GCVisitor& visitor) const noexcept override;
 };

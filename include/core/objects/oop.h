@@ -5,7 +5,6 @@
 #include "core/meow_object.h"
 #include "memory/gc_visitor.h"
 #include "common/type.h"
-#include "core/objects/function.h"
 
 class ObjClass : public MeowObject {
 private:
@@ -13,7 +12,7 @@ private:
     Class superclass_;
     std::unordered_map<String, Value> methods_;
 public:
-    ObjClass(String name) : name_(name) {}
+    ObjClass(String name = nullptr) : name_(name) {}
 
     inline String get_name() const noexcept {
         return name_;
@@ -39,14 +38,7 @@ public:
         methods_[name] = value;
     }
 
-    inline void trace(GCVisitor& visitor) const noexcept override {
-        if (superclass_) {
-            visitor.visit_object(superclass_);
-        }
-        for (auto& method : methods_) {
-            visitor.visit_value(method.second);
-        }
-    }
+    void trace(GCVisitor& visitor) const noexcept override;
 };
 
 
@@ -77,12 +69,7 @@ public:
         return fields_.find(name) != fields_.end();
     }
     
-    inline void trace(GCVisitor& visitor) const noexcept override {
-        visitor.visit_object(klass_);
-        for (auto& pair : fields_) {
-            visitor.visit_value(pair.second);
-        }
-    }
+    void trace(GCVisitor& visitor) const noexcept override;
 };
 
 class ObjBoundMethod : public MeowObject {
@@ -100,8 +87,5 @@ public:
         return function_;
     }
 
-    inline void trace(GCVisitor& visitor) noexcept override {
-        visitor.visit_object(instance_);
-        visitor.visit_object(function_);
-    }
+    void trace(GCVisitor& visitor) const noexcept override;
 };

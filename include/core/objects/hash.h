@@ -113,9 +113,5 @@ public:
      * @brief Tự khai báo những object, value mà mảng tham chiếu đến
      * @param[in, out] visitor Đối tượng để đi qua từng object, value mà mảng khai báo để đánh dấu
      */
-    void trace(GCVisitor& visitor) noexcept override {
-        for (auto& pair : fields_) {
-            visitor.visit_value(pair.second);
-        }
-    }
+    void trace(GCVisitor& visitor) const noexcept override;
 };
