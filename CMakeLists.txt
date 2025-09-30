@@ -23,10 +23,10 @@ target_sources(meow PRIVATE
 )
 
 # Thiết lập đường dẫn Include
-target_include_directories(meow PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}/src")
+target_include_directories(meow PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}/include")
 
 # Biên dịch precompiled headers
-target_precompile_headers(meow PRIVATE "src/common/pch.h")
+target_precompile_headers(meow PRIVATE "include/common/pch.h")
 
 # Đặt vị trí output cho file Executable
 set_target_properties(meow PROPERTIES
