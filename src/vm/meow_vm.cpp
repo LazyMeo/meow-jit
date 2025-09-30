@@ -26,6 +26,7 @@ void MeowVM::interpret() noexcept {
 
 void MeowVM::run() {
 
+    
 // #define DISPATCH() goto *labels[*pc]
 
 // void run(bytecode_t* bc) {
@@ -38,7 +39,7 @@ void MeowVM::run() {
 //         DISPATCH();
 }
 
-
+// Code cũ phía dưới, đừng để ý
 
 // #include "vm/meow_vm.h"
 // #include "memory/mark_sweep_gc.h"

@@ -1,3 +1,5 @@
+// Code cũ phía dưới, đừng để ý
+
 // #pragma once
 
 // #include "common/pch.h"

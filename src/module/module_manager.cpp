@@ -1,3 +1,5 @@
+// Code cũ phía dưới, đừng để ý
+
 // #include "module/module_manager.h"
 // #include "memory/memory_manager.h"
 // #include "vm/meow_engine.h"
