@@ -16,7 +16,7 @@ private:
     Proto main_proto_;
 
     bool has_main_ = false;
-    bool is_excuting_ = false;
+    bool is_executing_ = false;
     bool is_executed_ = false;
 public:
 
@@ -69,7 +69,7 @@ public:
     }
 
     inline bool is_excuting() const noexcept {
-        return is_excuting_;
+        return is_executing_;
     }
 
     inline bool is_executed() const noexcept {

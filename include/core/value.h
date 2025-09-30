@@ -71,6 +71,7 @@ public:
     Value(double f): data_(f) {}
     Value(MeowObject* o): data_(o) {}
 
+    inline bool is_null() const noexcept { return std::holds_alternative<Null>(data_); }
     inline bool is_bool() const noexcept { return std::holds_alternative<Bool>(data_); }
     inline bool is_int() const noexcept { return std::holds_alternative<Int>(data_); }
     inline bool is_real() const noexcept { return std::holds_alternative<Real>(data_); }

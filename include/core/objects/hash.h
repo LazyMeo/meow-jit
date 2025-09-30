@@ -61,7 +61,7 @@ public:
      * @param[in] key Giá trị key của value tại vị trí cần kiểm tra
      * @return 'true' nếu key tồn tại, ngược lại là 'false'
      */
-    inline const bool has(String key) const {
+    inline bool has(String key) const {
         return fields_.find(key) != fields_.end();
     }
 

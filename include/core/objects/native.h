@@ -33,4 +33,6 @@ public:
 
         return Value();
     }
+
+    inline void trace([[maybe_unused]] GCVisitor& visitor) noexcept {}
 };
