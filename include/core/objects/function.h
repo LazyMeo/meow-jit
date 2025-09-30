@@ -34,7 +34,7 @@ public:
         return closed_;
     }
 
-    inline void trace(GCVisitor& visitor) noexcept override {
+    inline void trace(GCVisitor& visitor) const noexcept override {
         visitor.visit_value(closed_);
     }
 };
@@ -78,10 +78,11 @@ public:
         return upvalueDescs.size();
     }
 
-    inline void trace(GCVisitor& visitor) noexcept override {
+    inline void trace(GCVisitor& visitor) const noexcept override {
         for (auto& constant : chunk_.constant_pool_) {
             visitor.visit_value(constant);
         }
+        // visitor.visit_object(module_);
     }
 };
 
@@ -104,7 +105,7 @@ public:
         upvalues_[index] = upvalue;
     }
 
-    inline void trace(GCVisitor& visitor) noexcept override {
+    inline void trace(GCVisitor& visitor) const noexcept override {
         visitor.visit_object(proto_);
         for (auto& upvalue : upvalues_) {
             visitor.visit_object(upvalue);

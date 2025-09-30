@@ -5,6 +5,7 @@
 #include "core/meow_object.h"
 #include "memory/gc_visitor.h"
 #include "common/type.h"
+#include "core/objects/string.h"
 #include "core/objects/function.h"
 
 class ObjModule : public MeowObject {
@@ -68,7 +69,7 @@ public:
         return has_main_;
     }
 
-    inline bool is_excuting() const noexcept {
+    inline bool is_executing() const noexcept {
         return is_executing_;
     }
 
@@ -76,7 +77,9 @@ public:
         return is_executed_;
     }
 
-    inline void trace(GCVisitor& visitor) noexcept override {
+    inline void trace(GCVisitor& visitor) const noexcept override {
+        visitor.visit_object(filename_);
+        visitor.visit_object(filepath_);
         for (auto& pair : globals_) visitor.visit_value(pair.second);
         for (auto& pair : exports_) visitor.visit_value(pair.second);
         visitor.visit_object(main_proto_);

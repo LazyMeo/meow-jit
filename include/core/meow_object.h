@@ -19,5 +19,5 @@ struct MeowObject {
      * @brief Tự khai báo cho GC những Value, Object mà Object này tham chiếu đến
      * @param[in, out] visitor Đối tượng để đi qua từng Object, Value mà mảng khai báo để đánh dấu
      */
-    virtual void trace(GCVisitor& visitor) noexcept = 0;
+    virtual void trace(GCVisitor& visitor) const noexcept = 0;
 };
