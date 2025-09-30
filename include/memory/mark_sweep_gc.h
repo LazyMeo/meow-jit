@@ -5,6 +5,7 @@
 #include "memory/garbage_collector.h"
 
 struct ExecutionContext;
+struct BuiltinRegistry;
 
 struct GCMetadata {
     bool is_marked_ = false;
@@ -12,20 +13,20 @@ struct GCMetadata {
 
 class MarkSweepGC : public GarbageCollector, public GCVisitor {
 private:
-    std::unordered_map<MeowObject*, GCMetadata> metadata_;
+    std::unordered_map<const MeowObject*, GCMetadata> metadata_;
     ExecutionContext* context_ = nullptr;
-
+    BuiltinRegistry* builtins_ = nullptr;
 public:
-    MarkSweepGC(ExecutionContext* context): context_(context) {}
+    MarkSweepGC(ExecutionContext* context, BuiltinRegistry* builtins): context_(context), builtins_(builtins) {}
     ~MarkSweepGC() override;
 
-    void register_object(MeowObject* object) noexcept override;
+    void register_object(const MeowObject* object) override;
 
     size_t collect() noexcept override;
 
-    void visit_value(Value& value) noexcept override;
+    void visit_value(const Value& value) noexcept override;
 
-    void visit_object(MeowObject* object) noexcept override;
+    void visit_object(const MeowObject* object) noexcept override;
 private:
-    void mark(MeowObject* object);
+    void mark(const MeowObject* object);
 };

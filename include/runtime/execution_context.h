@@ -3,6 +3,7 @@
 #include "common/pch.h"
 #include "core/value.h"
 #include "core/objects/function.h"
+#include "memory/gc_visitor.h"
 
 struct CallFrame {
     Function function_;
@@ -35,5 +36,14 @@ struct ExecutionContext {
         registers_.clear();
         open_upvalues_.clear();
         execption_handlers_.clear();
+    }
+
+    inline void trace(GCVisitor& visitor) const noexcept {
+        for (const auto& reg : registers_) {
+            visitor.visit_value(reg);
+        }
+        for (const auto& upvalue : open_upvalues_) {
+            visitor.visit_object(upvalue);
+        }
     }
 };

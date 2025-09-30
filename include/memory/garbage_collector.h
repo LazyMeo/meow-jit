@@ -16,7 +16,7 @@ public:
      * @brief Đăng kí một object để GC quản lí
      * @param[in] object Object cần được GC quản li
      */
-    virtual void register_object(MeowObject* object) noexcept = 0;
+    virtual void register_object(const MeowObject* object) = 0;
     
     /**
      * @brief Dọn dẹp các object không còn dược sử dụng
