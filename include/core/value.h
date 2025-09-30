@@ -81,3 +81,42 @@ public:
     inline double as_real() const noexcept { return std::get<Real>(data_); }
     inline MeowObject* as_object() const noexcept { return std::get<Object>(data_); }
 };
+
+// Nếu muốn dùng tagged-union, hãy uncomment code này
+
+// class Value {
+// private:
+//     enum class ValueType {
+//         Null,
+//         Bool,
+//         Int,
+//         Real,
+//         Object
+//     };
+
+//     union {
+//         bool b;
+//         int64_t i64;
+//         double f64;
+//         MeowObject* obj;
+//     } data_;
+//     ValueType type_;
+// public:
+//     Value(): type_(ValueType::Null) { data_.b = 0; }
+//     Value(std::monostate): type_(ValueType::Null) { data_.b = 0; }
+//     Value(bool b): type_(ValueType::Bool) { data_.b = b; }
+//     Value(int64_t i): type_(ValueType::Int) { data_.i64 = i; }
+//     Value(double f): type_(ValueType::Real) { data_.f64 = f; }
+//     Value(MeowObject* o): type_(ValueType::Object) { data_.obj = o; }
+
+//     inline bool is_null() const noexcept { return type_ == ValueType::Null; }
+//     inline bool is_bool() const noexcept { return type_ == ValueType::Bool; }
+//     inline bool is_int() const noexcept { return type_ == ValueType::Int; }
+//     inline bool is_real() const noexcept { return type_ == ValueType::Real; }
+//     inline bool is_object() const noexcept { return type_ == ValueType::Object; }
+
+//     inline bool as_bool() const noexcept { return data_.b; }
+//     inline int64_t as_int() const noexcept { return data_.i64; }
+//     inline double as_real() const noexcept { return data_.f64; }
+//     inline MeowObject* as_object() const noexcept { return data_.obj; }
+// };

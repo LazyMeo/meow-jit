@@ -6,12 +6,11 @@
 
 struct CallFrame {
     Function function_;
-    Module module_;
     size_t start_reg_;
     size_t ret_reg_;
     size_t ip_;
-    CallFrame(Function function, Module module, size_t start_reg, size_t ret_reg, size_t ip)
-        : function_(function), module_(module), start_reg_(start_reg), ret_reg_(ret_reg), ip_(ip) {}
+    CallFrame(Function function, size_t start_reg, size_t ret_reg, size_t ip)
+        : function_(function), start_reg_(start_reg), ret_reg_(ret_reg), ip_(ip) {}
 };
 
 struct ExceptionHandler {

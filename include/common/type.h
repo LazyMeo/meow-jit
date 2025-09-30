@@ -14,7 +14,7 @@ struct ObjNativeFunction;
 struct ObjClosure;
 struct ObjModule;
 
-using String = ObjString*;
+using String = const ObjString*;
 using Array = ObjArray*;
 using Hash = ObjHash*;
 

@@ -47,11 +47,12 @@ private:
     size_t num_upvalues_;
     String name_;
     Chunk chunk_;
+    Module module_;
     std::vector<UpvalueDesc> upvalueDescs;
 public:
 
-    ObjFunctionProto(size_t registers = 0, size_t upvalues = 0, String name)
-        : num_registers_(registers), num_upvalues_(upvalues), name_(name) {}
+    ObjFunctionProto(size_t registers = 0, size_t upvalues = 0, String name, Chunk&& chunk)
+        : num_registers_(registers), num_upvalues_(upvalues), name_(name), chunk_(std::move(chunk)) {}
 
     inline size_t get_num_registers() const noexcept {
         return num_registers_;
@@ -78,7 +79,7 @@ public:
     }
 
     inline void trace(GCVisitor& visitor) noexcept override {
-        for (auto& constant : chunk_.constant_pool) {
+        for (auto& constant : chunk_.constant_pool_) {
             visitor.visit_value(constant);
         }
     }
