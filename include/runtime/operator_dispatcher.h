@@ -14,8 +14,10 @@ enum class ValueType : uint8_t {
 constexpr size_t NUM_VALUE_TYPES = static_cast<size_t>(ValueType::TotalValueTypes); 
 constexpr size_t NUM_OPCODES = static_cast<size_t>(OpCode::TOTAL_OPCODES);
 
-using BinaryOpFunction = std::function<Value(const Value&, const Value&)>;
-using UnaryOpFunction = std::function<Value(const Value&)>;
+// using BinaryOpFunction = std::function<Value(const Value&, const Value&)>;
+// using UnaryOpFunction = std::function<Value(const Value&)>;
+using BinaryOpFunction = Value(*)(const Value&, const Value&);
+using UnaryOpFunction = Value(*)(const Value&);
 
 class OperatorDispatcher {
 private:
