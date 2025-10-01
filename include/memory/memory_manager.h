@@ -2,6 +2,7 @@
 
 #include "common/pch.h"
 #include "memory/garbage_collector.h"
+#include "common/type.h"
 
 struct ExecutionContext;
 class MemoryManager {
@@ -11,8 +12,6 @@ private:
     size_t gc_threshold_;
     size_t object_allocated_;
     bool gc_enabled_ = true;
-public:
-    MemoryManager(std::unique_ptr<GarbageCollector> gc): gc_(std::move(gc)), gc_threshold_(1024), object_allocated_(0) {}
 
     template<typename T, typename... Args>
     T* new_object(Args&&... args) noexcept {
@@ -25,6 +24,10 @@ public:
         ++object_allocated_;
         return newObj;
     }
+public:
+    MemoryManager(std::unique_ptr<GarbageCollector> gc): gc_(std::move(gc)), gc_threshold_(1024), object_allocated_(0) {}
+
+    Array new_array() noexcept;
 
     inline void enable_gc() noexcept {
         gc_enabled_ = true;
