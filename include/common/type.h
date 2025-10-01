@@ -34,3 +34,7 @@ using Bool = bool;
 using Int = int64_t;
 using Real = double;
 using Object = MeowObject*;
+
+enum class ValueType : uint8_t {
+    Null, Int, Real, Bool, String, Array, Object, Upvalue, Function, Class, Instance, BoundMethod, Proto, NativeFn, TotalValueTypes
+};
