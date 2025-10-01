@@ -7,6 +7,7 @@
 #pragma once
 
 #include "common/pch.h"
+#include "common/type.h"
 
 struct MeowObject;
 
@@ -21,12 +22,6 @@ private:
     // Nếu tốt hơn có thể dùng NaN-Boxing nhưng chỉ dùng được trên 64-bit, không dùng trên 32-bit được
     // Khi thực sự đây là bottle-neck thì mới thay đổi
     // Việc linh động dùng trên 32-bit, 64-bit vẫn quan trọng hơn nên ta sẽ không dùng NaN-Boxing
-
-    using Null = std::monostate;
-    using Bool = bool;
-    using Int = int64_t;
-    using Real = double;
-    using Object = MeowObject*;
 
     using BaseValue = std::variant<Null, Bool, Int, Real, Object>;
     BaseValue data_;
