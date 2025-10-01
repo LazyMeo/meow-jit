@@ -60,7 +60,7 @@ void ObjClosure::trace(GCVisitor& visitor) const noexcept {
     }
 }
 
-inline void ObjModule::trace(GCVisitor& visitor) const noexcept {
+void ObjModule::trace(GCVisitor& visitor) const noexcept {
     visitor.visit_object(filename_);
     visitor.visit_object(filepath_);
     for (const auto& [key, value] : globals_) {
