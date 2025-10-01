@@ -20,6 +20,7 @@ public:
      */
     ObjString(const std::string& data): data_(data) {}
     ObjString(std::string&& data) noexcept: data_(std::move(data)) {}
+    ObjString(const char* data): data_(data) {}
 
     /**
      * @brief Lấy giá trị của kí tự trong chuỗi tại vị trí index

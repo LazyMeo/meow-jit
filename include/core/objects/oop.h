@@ -57,15 +57,15 @@ public:
         klass_ = klass;
     }
 
-    inline Value get_method(String name) noexcept {
+    inline Value get_field(String name) noexcept {
         return fields_[name];
     }
 
-    inline void set_method(String name, Value value) noexcept {
+    inline void set_field(String name, Value value) noexcept {
         fields_[name] = value;
     }
 
-    inline bool has_method(String name) const {
+    inline bool has_field(String name) const {
         return fields_.find(name) != fields_.end();
     }
     
