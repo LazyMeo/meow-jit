@@ -2,12 +2,14 @@
 
 #include "common/pch.h"
 #include "memory/garbage_collector.h"
+#include "core/objects/native.h"
 #include "common/type.h"
 
 struct ExecutionContext;
 class MemoryManager {
 private:
     std::unique_ptr<GarbageCollector> gc_;
+    std::unordered_map<std::string, String> string_pool_;
 
     size_t gc_threshold_;
     size_t object_allocated_;
@@ -25,10 +27,22 @@ private:
         return newObj;
     }
 public:
-    MemoryManager(std::unique_ptr<GarbageCollector> gc): gc_(std::move(gc)), gc_threshold_(1024), object_allocated_(0) {}
+    MemoryManager(std::unique_ptr<GarbageCollector> gc);
 
-    Array new_array() noexcept;
-    String new_string(const char*) noexcept; // An idea to use String Interning
+    String new_string(const std::string& string);
+    String new_string(const char* chars, size_t length);
+
+    Array new_array(const std::vector<Value>& elements = {});
+    Hash new_hash(const std::unordered_map<String, Value>& fields = {});
+    Upvalue new_upvalue(size_t index);
+    Proto new_proto(size_t registers, size_t upvalues, String name, Chunk&& chunk);
+    Function new_function(Proto proto);
+    Module new_module(String file_name, String file_path, Proto main_proto = nullptr);
+    NativeFn new_native(ObjNativeFunction::NativeFnSimple fn);
+    NativeFn new_native(ObjNativeFunction::NativeFnAdvanced fn);
+    Class new_class(String name = nullptr);
+    Instance new_instance(Class klass);
+    BoundMethod new_bound_method(Instance instance, Function function);
 
     inline void enable_gc() noexcept {
         gc_enabled_ = true;

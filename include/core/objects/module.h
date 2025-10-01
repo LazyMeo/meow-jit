@@ -10,8 +10,8 @@ class ObjModule : public MeowObject {
 private:
     enum class State { EXECUTING, EXECUTED };
 
-    String filename_;
-    String filepath_;
+    String file_name_;
+    String file_path_;
     std::unordered_map<String, Value> globals_;
     std::unordered_map<String, Value> exports_;
     Proto main_proto_;
@@ -19,15 +19,15 @@ private:
     State state;
 public:
 
-    ObjModule(String filename, String filepath, Proto main_proto = nullptr)
-        : filename_(filename), filepath_(filepath), main_proto_(main_proto) {}
+    ObjModule(String file_name, String file_path, Proto main_proto = nullptr)
+        : file_name_(file_name), file_path_(file_path), main_proto_(main_proto) {}
 
     inline String get_file_name() const noexcept {
-        return filename_;
+        return file_name_;
     }
 
     inline String get_file_path() const noexcept {
-        return filepath_;
+        return file_path_;
     }
 
     inline Value get_global(String name) noexcept {

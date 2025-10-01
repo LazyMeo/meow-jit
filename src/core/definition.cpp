@@ -55,8 +55,8 @@ void ObjClosure::trace(GCVisitor& visitor) const noexcept {
 }
 
 void ObjModule::trace(GCVisitor& visitor) const noexcept {
-    visitor.visit_object(filename_);
-    visitor.visit_object(filepath_);
+    visitor.visit_object(file_name_);
+    visitor.visit_object(file_path_);
     for (const auto& [key, value] : globals_) {
         visitor.visit_object(key);
         visitor.visit_value(value);

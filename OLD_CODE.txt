@@ -1,0 +1,3471 @@
+// Code cũ, tham khảo là chính, không phù hợp với cấu trúc hiện tại
+// Không sao chép y hệt từ đây
+
+// meow_vm.h và meow_engine.h
+
+#pragma once
+
+#include "core/value.h"
+
+class MeowEngine {
+public:
+    virtual ~MeowEngine() = default;
+
+    virtual Value call(const Value& callee, const std::vector<Value>& args) = 0;
+
+    virtual MemoryManager* getMemoryManager() = 0;
+
+    virtual void registerMethod(const std::string& typeName, const std::string& methodName, const Value method) = 0;
+    
+    virtual void registerGetter(const std::string& typeName, const std::string& propName, const Value getter) = 0;
+
+    virtual const std::vector<std::string>& getArguments() const = 0;
+};
+
+#pragma once
+
+#include "common/pch.h"
+#include "core/value.h"
+#include "vm/meow_engine.h"
+#include "diagnostics/new_error.h" // Thêm include
+
+class VMError : public std::runtime_error {
+public:
+    VMError(const std::string& m) : std::runtime_error(m) {}
+};
+
+struct VMArgs {
+    std::vector<std::string> commandLineArgs;
+    std::string entryPointDir;
+};
+
+class ExecutionContext;
+class ModuleManager;
+class OperatorDispatcher;
+class MemoryManager;
+
+class MeowVM: public MeowEngine {
+public:
+    MeowVM(const std::string& entryPointDir);
+    MeowVM(const std::string& entryPointDir, int argc, char* argv[]);
+    MeowVM(const MeowVM&) = delete;
+    MeowVM& operator=(const MeowVM&) = delete;
+    ~MeowVM();
+    void interpret(const std::string& entryPath, bool isBinary);
+private:
+    using MethodMap = std::unordered_map<std::string, Value>;
+    using BuiltinRegistry = std::unordered_map<std::string, MethodMap>;
+
+    std::unique_ptr<ExecutionContext> context;
+    std::unique_ptr<ModuleManager> moduleManager;
+    std::unique_ptr<OperatorDispatcher> opDispatcher;
+    std::unique_ptr<MemoryManager> memoryManager;
+    BuiltinRegistry builtinMethods;
+    BuiltinRegistry builtinGetters;
+    VMArgs args;
+    
+    // Con trỏ tới frame và lệnh hiện tại cho các helper
+    CallFrame* currentFrame = nullptr;
+    const uint8_t* currentInst = nullptr;
+
+
+    void defineNativeFunctions();
+    void run();
+    void handleRuntimeException(const VMError& e);
+    void closeUpvalues(size_t slotIndex);
+    Upvalue captureUpvalue(size_t slotIndex);
+    void executeCall(const Value callee, size_t dst, size_t argStart, size_t argc, size_t base);
+
+    inline MemoryManager* getMemoryManager() noexcept override {
+        return this->memoryManager.get();
+    }
+    Value call(const Value callee, const std::vector<Value>& args) override;
+    inline void registerMethod(const std::string& typeName, const std::string& methodName, const Value method) noexcept override {
+        builtinMethods[typeName][methodName] = method;
+    }
+    inline void registerGetter(const std::string& typeName, const std::string& propName, const Value getter) noexcept override {
+        builtinGetters[typeName][propName] = getter;
+    }
+    inline const std::vector<std::string>& getArguments() const noexcept override {
+        return args.commandLineArgs;
+    }
+
+    std::optional<Value> getMagicMethod(const Value obj, const std::string& name);
+
+    [[noreturn]] void newVMError(const std::string& msg);
+};
+
+
+#include "vm/meow_vm.h"
+#include "memory/mark_sweep_gc.h"
+#include "runtime/operator_dispatcher.h"
+#include "module/module_manager.h"
+#include "memory/memory_manager.h"
+#include "memory/meow_object.h"
+#include "memory/gc_disable_guard.h"
+#include "runtime/execution_context.h"
+#include <iomanip> // Thêm thư viện này
+
+MeowVM::MeowVM(const std::string& entryPointDir) {
+    args.entryPointDir = entryPointDir;
+    memoryManager = std::make_unique<MemoryManager>(std::make_unique<MarkSweepGC>());
+    context = std::make_unique<ExecutionContext>();
+    opDispatcher = std::make_unique<OperatorDispatcher>();
+    moduleManager = std::make_unique<ModuleManager>();
+    memoryManager->setContext(context.get());
+    opDispatcher->setMemoryManager(memoryManager.get());
+}
+
+MeowVM::MeowVM(const std::string& entryPointDir, int argc, char* argv[]) {
+    args.entryPointDir = entryPointDir;
+    memoryManager = std::make_unique<MemoryManager>(std::make_unique<MarkSweepGC>());
+    context = std::make_unique<ExecutionContext>();
+    opDispatcher = std::make_unique<OperatorDispatcher>();
+    moduleManager = std::make_unique<ModuleManager>();
+    memoryManager->setContext(context.get());
+    opDispatcher->setMemoryManager(memoryManager.get());
+
+    args.commandLineArgs.reserve(argc);
+    for (int i = 0; i < argc; ++i) {
+        args.commandLineArgs.push_back(argv[i]);
+    }
+}
+
+MeowVM::~MeowVM() = default;
+
+void MeowVM::interpret(const std::string& entryPath, bool isBinary) {
+    context->reset();
+    this->moduleManager->setEngine(this);
+    this->moduleManager->setEntryPath(entryPath);
+    this->moduleManager->setMemoryManager(memoryManager.get());
+
+    defineNativeFunctions();
+
+    try {
+        auto loadedModule = moduleManager->loadModule(entryPath, args.entryPointDir, isBinary);
+
+        if (!loadedModule) {
+            std::cerr << "💥 Lỗi nghiêm trọng trong MeowScript VM: " << loadedModule.error().getMessage() << std::endl;
+            return;
+        }
+
+        auto entryMod = loadedModule.value();
+
+        if (!entryMod->isExecuted) {
+            if (!entryMod->hasMain) throw VMError("Entry module thiếu @main.");
+            entryMod->isExecuting = true;
+
+            auto closure = memoryManager->newObject<ObjClosure>(entryMod->getMain());
+            Int base = static_cast<Int>(context->stackSlots.size());
+            context->stackSlots.resize(base + entryMod->getMain()->getNumRegisters(), Value(Null{}));
+            CallFrame frame(closure, base, entryMod, entryMod->getMain()->getChunk().getCode(), -1);
+            context->callStack.push_back(frame);
+        }
+        run();
+        entryMod->isExecuted = true;
+
+    } catch (const VMError& e) {
+        std::cerr << "💥 Lỗi nghiêm trọng trong MeowScript VM: " << e.what() << std::endl;
+    } catch (const std::exception& e) {
+        std::cerr << "🤯 Lỗi C++ không lường trước: " << e.what() << std::endl;
+    }
+}
+
+
+void MeowVM::run() {
+    // TODO: Thay toàn bộ đoạn hardcode text dưới đây bằng ErrorCode, tạo Diagnostic qua helper,... không hardcode text để có i18n
+    // TODO: Mấy code này là code cũ, không phù hợp với cấu trúc hiện tại, cần thay toàn bộ
+    // TODO: Làm tương tự với handle_method.cpp, handle_call.cpp, handle_errors.cpp, define_natives.cpp,.. vì toàn cái cũ cần thay
+    while (!context->callStack.empty()) {
+        currentFrame = &context->callStack.back();
+        auto proto = currentFrame->closure->getProto();
+        context->currentBase = currentFrame->slotStart;
+        const uint8_t* code = proto->getChunk().getCode();
+        
+        // Helper để đọc một đối số 1-2 byte có độ dài thay đổi
+        auto READ_SHORT = [&]() -> uint16_t {
+            uint8_t byte1 = *currentFrame->ip++;
+            if ((byte1 & 0x80) == 0) {
+                return byte1;
+            } else {
+                uint8_t byte2 = *currentFrame->ip++;
+                return ((byte1 & 0x7F) | (static_cast<uint16_t>(byte2) << 7));
+            }
+        };
+
+        // Helper để đọc một địa chỉ nhảy 2 byte
+        auto READ_ADDRESS = [&]() -> uint16_t {
+            uint8_t byte1 = *currentFrame->ip++;
+            uint8_t byte2 = *currentFrame->ip++;
+            return (static_cast<uint16_t>(byte1) | (static_cast<uint16_t>(byte2) << 8));
+        };
+        
+        try {
+            uint8_t opcode = *currentFrame->ip++;
+            {
+                GCScopeGuard gcGuard(memoryManager.get());
+
+                switch (static_cast<OpCode>(opcode)) {
+                    // --- Loads / Moves ---
+                    case OpCode::MOVE: {
+                        size_t dst = READ_SHORT(), src = READ_SHORT();
+                        context->stackSlots[context->currentBase + dst] = context->stackSlots[context->currentBase + src];
+                        break;
+                    }
+
+                    case OpCode::LOAD_CONST: {
+                        size_t dst = READ_SHORT(), cidx = READ_SHORT();
+                        if (cidx >= proto->getChunk().getConstantPoolSize())
+                            newVMError("LOAD_CONST index OOB");
+                        context->stackSlots[context->currentBase + dst] = proto->getChunk().getConstant(cidx);
+                        break;
+                    }
+
+                    case OpCode::LOAD_INT: {
+                        size_t dst = READ_SHORT();
+                        int64_t val = read_i64_le(proto->getChunk().code, currentFrame->ip, proto->getChunk().getCodeSize());
+                        context->stackSlots[context->currentBase + dst] = Value(val);
+                        break;
+                    }
+
+                    case OpCode::LOAD_NULL: {
+                        context->stackSlots[context->currentBase + static_cast<size_t>(READ_SHORT())] = Value(Null{});
+                        break;
+                    }
+
+                    case OpCode::LOAD_TRUE: {
+                        context->stackSlots[context->currentBase + static_cast<size_t>(READ_SHORT())] = Value(true);
+                        break;
+                    }
+
+                    case OpCode::LOAD_FALSE: {
+                        context->stackSlots[context->currentBase + static_cast<size_t>(READ_SHORT())] = Value(false);
+                        break;
+                    }
+
+                    // --- Binary operators (ADD, SUB, ...) ---
+                    case OpCode::ADD:
+                    case OpCode::SUB:
+                    case OpCode::MUL:
+                    case OpCode::DIV:
+                    case OpCode::MOD:
+                    case OpCode::POW:
+                    case OpCode::EQ:
+                    case OpCode::NEQ:
+                    case OpCode::GT:
+                    case OpCode::GE:
+                    case OpCode::LT:
+                    case OpCode::LE:
+                    case OpCode::BIT_AND:
+                    case OpCode::BIT_OR:
+                    case OpCode::BIT_XOR:
+                    case OpCode::LSHIFT:
+                    case OpCode::RSHIFT: {
+                        Int dst = READ_SHORT(), r1 = READ_SHORT(), r2 = READ_SHORT();
+                        auto& left = context->stackSlots[context->currentBase + dst];
+                        auto& right = context->stackSlots[context->currentBase + r2];
+                        auto& leftSrc = context->stackSlots[context->currentBase + r1];
+                        Value result;
+                        if (auto func = opDispatcher->find(static_cast<OpCode>(opcode), leftSrc, right)) {
+                            result = (*func)(leftSrc, right);
+                        } else {
+                            newVMError("Unsupported binary operator");
+                        }
+                        context->stackSlots[context->currentBase + dst] = result;
+                        break;
+                    }
+
+                    // --- Unary ops ---
+                    case OpCode::NEG:
+                    case OpCode::NOT:
+                    case OpCode::BIT_NOT: {
+                        size_t dst = READ_SHORT(), src = READ_SHORT();
+                        auto& val = context->stackSlots[context->currentBase + src];
+                        Value result;
+                        if (auto func = opDispatcher->find(static_cast<OpCode>(opcode), val)) {
+                            result = (*func)(val);
+                        } else {
+                            newVMError("Unsupported unary operator");
+                        }
+                        context->stackSlots[context->currentBase + dst] = result;
+                        break;
+                    }
+
+                    // --- Globals ---
+                    case OpCode::GET_GLOBAL: {
+                        size_t dst = READ_SHORT(), cidx = READ_SHORT();
+                        if (cidx >= proto->getChunk().getConstantPoolSize())
+                            newVMError("GET_GLOBAL index OOB");
+                        if (!proto->getChunk().getConstant(cidx).is<String>())
+                            newVMError("GET_GLOBAL name must be a string");
+                        auto name = proto->getChunk().getConstant(cidx).get<String>();
+                        auto it = currentFrame->module->globals.find(name->utf8());
+                        if (it != currentFrame->module->globals.end()) {
+                            context->stackSlots[context->currentBase + dst] = it->second;
+                        } else {
+                            context->stackSlots[context->currentBase + dst] = Value(Null{});
+                        }
+                        break;
+                    }
+
+                    case OpCode::SET_GLOBAL: {
+                        size_t cidx = READ_SHORT(), src = READ_SHORT();
+                        if (cidx >= proto->getChunk().getConstantPoolSize())
+                            newVMError("SET_GLOBAL index OOB");
+                        if (!proto->getChunk().getConstant(cidx).is<String>())
+                            newVMError("Global variable name must be a string");
+                        auto name = proto->getChunk().getConstant(cidx).get<String>();
+                        currentFrame->module->globals[name->utf8()] = context->stackSlots[context->currentBase + src];
+                        break;
+                    }
+
+                    // --- Upvalues / Closure ---
+                    case OpCode::GET_UPVALUE: {
+                        size_t dst = READ_SHORT(), uvIndex = READ_SHORT();
+                        if (uvIndex >= currentFrame->closure->upvalues.size())
+                            newVMError("GET_UPVALUE index OOB");
+                        auto uv = currentFrame->closure->upvalues[uvIndex];
+                        if (uv->isClosed()) {
+                            context->stackSlots[context->currentBase + dst] = uv->getClosed();
+                        } else {
+                            context->stackSlots[context->currentBase + dst] = context->stackSlots[uv->slotIndex];
+                        }
+                        break;
+                    }
+
+                    case OpCode::SET_UPVALUE: {
+                        size_t uvIndex = READ_SHORT(), src = READ_SHORT();
+                        if (uvIndex >= currentFrame->closure->upvalues.size())
+                            newVMError("SET_UPVALUE index OOB");
+                        auto uv = currentFrame->closure->upvalues[uvIndex];
+                        if (!uv->isClosed()) {
+                            context->stackSlots[uv->slotIndex] = context->stackSlots[context->currentBase + src];
+                        } else {
+                            uv->close(context->stackSlots[context->currentBase + src]);
+                        }
+                        break;
+                    }
+
+                    case OpCode::CLOSURE: {
+                        size_t dst = READ_SHORT(), protoIdx = READ_SHORT();
+                        if (protoIdx >= proto->getChunk().getConstantPoolSize() || !(proto->getChunk().getConstant(protoIdx)).is<Proto>()) {
+                            newVMError("CLOSURE constant must be a FunctionProto.");
+                        }
+                        auto childProto = proto->getChunk().getConstant(protoIdx).get<Proto>();
+                        auto closure = memoryManager->newObject<ObjClosure>(childProto);
+                        closure->upvalues.resize(childProto->upvalueDescs.size(), nullptr);
+
+                        for (size_t i = 0; i < childProto->upvalueDescs.size(); ++i) {
+                            auto& desc = childProto->upvalueDescs[i];
+                            if (desc.isLocal) {
+                                closure->upvalues[i] = captureUpvalue(context->currentBase + desc.index);
+                            } else {
+                                if (desc.index >= static_cast<Int>(currentFrame->closure->upvalues.size())) {
+                                    newVMError("CLOSURE: parent upvalue index OOB");
+                                }
+                                closure->upvalues[i] = currentFrame->closure->upvalues[desc.index];
+                            }
+                        }
+                        context->stackSlots[context->currentBase + dst] = Value(closure);
+                        break;
+                    }
+
+                    case OpCode::CLOSE_UPVALUES: {
+                        closeUpvalues(context->currentBase + READ_SHORT());
+                        break;
+                    }
+
+                    // --- Control flow ---
+                    case OpCode::JUMP: {
+                        Int target = READ_ADDRESS();
+                        if (target >= static_cast<Int>(proto->getChunk().getCodeSize()))
+                            newVMError("JUMP target OOB");
+                        currentFrame->ip = proto->getChunk().getCode() + target;
+                        break;
+                    }
+
+                    case OpCode::JUMP_IF_FALSE: {
+                        Int reg = READ_SHORT(), target = READ_ADDRESS();
+                        if (!asBool(context->stackSlots[context->currentBase + reg])) {
+                            if (target >= static_cast<Int>(proto->getChunk().getCodeSize()))
+                                newVMError("JUMP_IF_FALSE target OOB");
+                            currentFrame->ip = proto->getChunk().getCode() + target;
+                        }
+                        break;
+                    }
+
+                    case OpCode::JUMP_IF_TRUE: {
+                        Int reg = READ_SHORT(), target = READ_ADDRESS();
+                        if (asBool(context->stackSlots[context->currentBase + reg])) {
+                            if (target >= static_cast<Int>(proto->getChunk().getCodeSize()))
+                                newVMError("JUMP_IF_TRUE target OOB");
+                            currentFrame->ip = proto->getChunk().getCode() + target;
+                        }
+                        break;
+                    }
+                    
+                    case OpCode::CALL: {
+                        Int dst = READ_SHORT(), fnReg = READ_SHORT(), argStart = READ_SHORT(), argc = READ_SHORT();
+                        auto& callee = context->stackSlots[context->currentBase + fnReg];
+                        executeCall(callee, dst, argStart, argc, context->currentBase);
+                        break;
+                    }
+                    case OpCode::CALL_VOID: {
+                        Int fnReg = READ_SHORT(), argStart = READ_SHORT(), argc = READ_SHORT();
+                        auto& callee = context->stackSlots[context->currentBase + fnReg];
+                        executeCall(callee, -1, argStart, argc, context->currentBase);
+                        break;
+                    }
+
+                    case OpCode::RETURN: {
+                        Value retVal = (currentFrame->retReg == -1) ? Value(Null{}) : context->stackSlots[context->currentBase + currentFrame->retReg];
+                        closeUpvalues(context->currentBase);
+
+                        CallFrame poppedFrame = *currentFrame;
+                        context->callStack.pop_back();
+
+                        if (context->callStack.empty()) {
+                            context->stackSlots.clear();
+                            currentFrame = nullptr;
+                            currentInst = nullptr;
+                            break;
+                        }
+                        currentFrame = &context->callStack.back();
+                        context->currentBase = currentFrame->slotStart;
+                        Int destReg = poppedFrame.retReg;
+                        if (destReg != -1) {
+                            Int need = currentFrame->slotStart + destReg + 1;
+                            if (static_cast<Int>(context->stackSlots.size()) < need) {
+                                context->stackSlots.resize(need, Value(Null{}));
+                            }
+                            context->stackSlots[currentFrame->slotStart + destReg] = retVal;
+                        }
+                        currentFrame->ip = poppedFrame.ip;
+                        break;
+                    }
+
+                    case OpCode::HALT: {
+                        context->callStack.clear();
+                        break;
+                    }
+
+                    // --- Arrays / Hashes / Indexing ---
+                    case OpCode::NEW_ARRAY: {
+                        Int dst = READ_SHORT(), startIdx = READ_SHORT(), count = READ_SHORT();
+                        if (count < 0 || startIdx < 0) newVMError("NEW_ARRAY: invalid range");
+                        if (context->currentBase + startIdx + count > static_cast<Int>(context->stackSlots.size()))
+                            newVMError("NEW_ARRAY: register range OOB");
+
+                        Array arr = memoryManager->newObject<ObjArray>();
+                        arr->elements_.reserve(static_cast<size_t>(count));
+                        for (Int i = 0; i < count; ++i) {
+                            arr->elements_.push_back(context->stackSlots[context->currentBase + startIdx + i]);
+                        }
+                        context->stackSlots[context->currentBase + dst] = Value(arr);
+                        break;
+                    }
+
+                    case OpCode::NEW_HASH: {
+                        Int dst = READ_SHORT(), startIdx = READ_SHORT(), count = READ_SHORT();
+                        if (count < 0 || startIdx < 0) newVMError("NEW_HASH: invalid range");
+                        if (context->currentBase + startIdx + count*2 > static_cast<Int>(context->stackSlots.size()))
+                            newVMError("NEW_HASH: register range OOB");
+
+                        Object hm = memoryManager->newObject<ObjObject>();
+                        for (Int i = 0; i < count; ++i) {
+                            Value& key = context->stackSlots[context->currentBase + startIdx + i * 2];
+                            Value& val = context->stackSlots[context->currentBase + startIdx + i * 2 + 1];
+                            hm->fields[toString(key)] = val;
+                        }
+                        context->stackSlots[context->currentBase + dst] = Value(hm);
+                        break;
+                    }
+
+                    case OpCode::GET_INDEX: {
+                        Int dst = READ_SHORT(), srcReg = READ_SHORT(), keyReg = READ_SHORT();
+                        if (context->currentBase + srcReg >= static_cast<Int>(context->stackSlots.size()) ||
+                            context->currentBase + keyReg >= static_cast<Int>(context->stackSlots.size()) ||
+                            context->currentBase + dst >= static_cast<Int>(context->stackSlots.size()))
+                            newVMError("GET_INDEX register OOB");
+
+                        Value& src = context->stackSlots[context->currentBase + srcReg];
+                        Value& key = context->stackSlots[context->currentBase + keyReg];
+
+                        if (auto mm = getMagicMethod(src, "__getindex__")) {
+                            Value res = call(*mm, { key });
+                            context->stackSlots[context->currentBase + dst] = res;
+                            break;
+                        }
+                        if (key.is<Int>()) {
+                            Int idx = toInt(key);
+                            if (src.is<Array>()) {
+                                Array arr = src.get<Array>();
+                                if (!arr) newVMError("Array null in GET_INDEX");
+                                auto &elems = arr->elements_;
+                                if (idx < 0 || idx >= static_cast<Int>(elems.size())) {
+                                    std::ostringstream os;
+                                    os << "Chỉ số vượt quá phạm vi: '" << idx << "'. Truy cập trên mảng: `\n" << toString(arr) << "\n`";
+                                    newVMError(os.str());
+                                }
+                                context->stackSlots[context->currentBase + dst] = elems[idx];
+                                break;
+                            }
+                            if (src.is<String>()) {
+                                Str s = src.get<String>();
+                                if (idx < 0 || idx >= static_cast<Int>(s->size())) {
+                                    std::ostringstream os;
+                                    os << "Chỉ số vượt quá phạm vi: '" << idx << "'. Truy cập trên string: `\n" << toString(s) << "\n`";
+                                    newVMError(os.str());
+                                }
+                                context->stackSlots[context->currentBase + dst] = Value(memoryManager->newObject<ObjString>(std::string(1, s->utf8()[idx])));
+                                break;
+                            }
+                            if (src.is<Object>()) {
+                                Object m = src.get<Object>();
+                                std::string k = toString(key);
+                                auto it = m->fields.find(k);
+                                context->stackSlots[context->currentBase + dst] = (it != m->fields.end()) ? it->second : Value(Null{});
+                                break;
+                            }
+                            newVMError("Numeric index not supported on type '" + toString(src) + "'");
+                        }
+                        std::string keyName = isString(key) ? key.get<String>()->utf8() : toString(key);
+
+                        if (auto mm = getMagicMethod(src, "__getprop__")) {
+                            Value res = call(*mm, { Value(memoryManager->newObject<ObjString>(keyName)) });
+                            context->stackSlots[context->currentBase + dst] = res;
+                            break;
+                        }
+
+                        if (auto mm2 = getMagicMethod(src, keyName)) {
+                            context->stackSlots[context->currentBase + dst] = *mm2;
+                            break;
+                        }
+                        context->stackSlots[context->currentBase + dst] = Value(Null{});
+                        break;
+                    }
+
+                    case OpCode::SET_INDEX: {
+                        Int srcReg = READ_SHORT(), keyReg = READ_SHORT(), valReg = READ_SHORT();
+                        if (context->currentBase + srcReg >= static_cast<Int>(context->stackSlots.size()) ||
+                            context->currentBase + keyReg >= static_cast<Int>(context->stackSlots.size()) ||
+                            context->currentBase + valReg >= static_cast<Int>(context->stackSlots.size()))
+                            newVMError("SET_INDEX register OOB");
+
+                        Value& src = context->stackSlots[context->currentBase + srcReg];
+                        Value& key = context->stackSlots[context->currentBase + keyReg];
+                        Value& val = context->stackSlots[context->currentBase + valReg];
+
+                        if (auto mm = getMagicMethod(src, "__setindex__")) {
+                            (void) call(*mm, { key, val });
+                            break;
+                        }
+
+                        if (key.is<Int>()) {
+                            Int idx = toInt(key);
+                            if (src.is<Array>()) {
+                                Array arr = src.get<Array>();
+                                if (idx < 0) newVMError("Invalid index");
+                                if (idx >= static_cast<Int>(arr->elements_.size())) {
+                                    if (idx > 10000000) newVMError("Index too large");
+                                    arr->elements_.resize(static_cast<size_t>(idx + 1));
+                                }
+                                arr->elements_[static_cast<size_t>(idx)] = val;
+                                break;
+                            }
+                            if (src.is<String>()) {
+                                if (!val.is<String>() || val.get<String>()->empty()) newVMError("String assign must be non-empty string");
+                                Str s = src.get<String>();
+                                if (idx < 0 || idx >= static_cast<Int>(s->size())) {
+                                    std::ostringstream os;
+                                    os << "Chỉ số vượt quá phạm vi: '" << idx << "'. Truy cập trên string: `\n" << toString(s) << "\n`";
+                                    newVMError(os.str());
+                                }
+                                s->utf8()[static_cast<size_t>(idx)] = val.get<String>()->utf8()[0];
+                                break;
+                            }
+                            if (src.is<Object>()) {
+                                Object m = src.get<Object>();
+                                std::string k = toString(key);
+                                m->fields[k] = val;
+                                break;
+                            }
+                            newVMError("Numeric index not supported on type '" + toString(src) + "'");
+                        }
+                        std::string keyName = isString(key) ? key.get<String>()->utf8() : toString(key);
+                        if (auto mm = getMagicMethod(src, "__setprop__")) {
+                            (void) call(*mm, { Value(memoryManager->newObject<ObjString>(keyName)), val });
+                            break;
+                        }
+
+                        if (src.is<Instance>()) {
+                            Instance inst = src.get<Instance>();
+                            inst->fields[keyName] = val;
+                            break;
+                        }
+                        if (src.is<Object>()) {
+                            Object m = src.get<Object>();
+                            m->fields[keyName] = val;
+                            break;
+                        }
+                        if (src.is<Class>()) {
+                            Class cls = src.get<Class>();
+                            if (!val.is<Function>() && !val.is<BoundMethod>()) newVMError("Method must be closure");
+                            cls->methods[keyName] = val;
+                            break;
+                        }
+
+                        newVMError("SET_INDEX not supported on type '" + toString(src) + "'");
+                        break;
+                    }
+
+                    case OpCode::GET_KEYS: {
+                        Int dst = READ_SHORT(), srcReg = READ_SHORT();
+                        if (context->currentBase + srcReg >= static_cast<Int>(context->stackSlots.size()))
+                            newVMError("GET_KEYS register OOB");
+                        Value& src = context->stackSlots[context->currentBase + srcReg];
+
+                        Array keysArr = memoryManager->newObject<ObjArray>();
+                        if (src.is<Instance>()) {
+                            Instance inst = src.get<Instance>();
+                            keysArr->elements_.reserve(inst->fields.size());
+                            for (const auto& pair : inst->fields) keysArr->elements_.push_back(Value(memoryManager->newObject<ObjString>(pair.first)));
+                        } else if (src.is<Object>()) {
+                            Object obj = src.get<Object>();
+                            keysArr->elements_.reserve(obj->fields.size());
+                            for (const auto& pair : obj->fields) keysArr->elements_.push_back(Value(memoryManager->newObject<ObjString>(pair.first)));
+                        } else if (src.is<Array>()) {
+                            Array arr = src.get<Array>();
+                            Int size = static_cast<Int>(arr->elements_.size());
+                            keysArr->elements_.reserve(size);
+                            for (Int i = 0; i < size; ++i) keysArr->elements_.push_back(Value(i));
+                        } else if (src.is<String>()) {
+                            String s = src.get<String>();
+                            Int size = static_cast<Int>(s->size());
+                            keysArr->elements_.reserve(size);
+                            for (Int i = 0; i < size; ++i) keysArr->elements_.push_back(Value(i));
+                        }
+
+                        context->stackSlots[context->currentBase + dst] = Value(keysArr);
+                        break;
+                    }
+
+                    case OpCode::GET_VALUES: {
+                        Int dst = READ_SHORT(), srcReg = READ_SHORT();
+                        if (context->currentBase + srcReg >= static_cast<Int>(context->stackSlots.size()))
+                            newVMError("GET_VALUES register OOB");
+                        Value& src = context->stackSlots[context->currentBase + srcReg];
+
+                        Array valueArr = memoryManager->newObject<ObjArray>();
+                        if (src.is<Instance>()) {
+                            Instance inst = src.get<Instance>();
+                            valueArr->elements_.reserve(inst->fields.size());
+                            for (const auto& pair : inst->fields) valueArr->elements_.push_back(pair.second);
+                        } else if (src.is<Object>()) {
+                            Object obj = src.get<Object>();
+                            valueArr->elements_.reserve(obj->fields.size());
+                            for (const auto& pair : obj->fields) valueArr->elements_.push_back(pair.second);
+                        } else if (src.is<Array>()) {
+                            Array arr = src.get<Array>();
+                            valueArr->elements_.reserve(arr->elements_.size());
+                            for (const auto& element : arr->elements_) valueArr->elements_.push_back(element);
+                        } else if (src.is<String>()) {
+                            String s = src.get<String>();
+                            for (const auto& c : s->utf8()) valueArr->elements_.push_back(Value(memoryManager->newObject<ObjString>(std::string(1, c))));
+                        }
+
+                        context->stackSlots[context->currentBase + dst] = Value(valueArr);
+                        break;
+                    }
+
+                    // --- Modules / imports / exports ---
+                    case OpCode::IMPORT_MODULE: {
+                        Int dst = READ_SHORT(), pathIdx = READ_SHORT();
+                        if (pathIdx >= static_cast<Int>(proto->getChunk().getConstantPoolSize()))
+                            newVMError("IMPORT_MODULE index OOB");
+                        if (!proto->getChunk().getConstant(pathIdx).is<String>())
+                            newVMError("IMPORT_MODULE path must be a string");
+
+                        Str importPath = proto->getChunk().getConstant(pathIdx).get<String>();
+                        Bool importerBinary = currentFrame->module->isBinary;
+
+                        auto loadedModule = moduleManager->loadModule(importPath->utf8(), currentFrame->module->getPath(), importerBinary);
+                        if (!loadedModule) {
+                            newVMError("Failed to load module: " + importPath->utf8());
+                        }
+                        auto mod = loadedModule.value();
+                        context->stackSlots[context->currentBase + dst] = Value(mod);
+
+                        if (mod->hasMain && !mod->isExecuted) {
+                            if (!mod->isExecuting) {
+                                mod->isExecuting = true;
+                                auto moduleClosure = memoryManager->newObject<ObjClosure>(mod->getMain());
+                                Int newStart = static_cast<Int>(context->stackSlots.size());
+                                context->stackSlots.resize(newStart + mod->getMain()->getNumRegisters(), Value(Null{}));
+                                CallFrame newFrame(moduleClosure, newStart, mod, mod->getMain()->getChunk().getCode(), -1);
+                                context->callStack.push_back(newFrame);
+                                mod->isExecuted = true;
+                            }
+                        }
+                        break;
+                    }
+
+                    case OpCode::EXPORT: {
+                        Int nameIdx = READ_SHORT(), srcReg = READ_SHORT();
+                        if (nameIdx >= static_cast<Int>(proto->getChunk().getConstantPoolSize()))
+                            newVMError("EXPORT index OOB");
+                        if (!proto->getChunk().getConstant(nameIdx).is<String>())
+                            newVMError("EXPORT name must be a string");
+                        Str exportName = proto->getChunk().getConstant(nameIdx).get<String>();
+                        currentFrame->module->exports[exportName->utf8()] = context->stackSlots[context->currentBase + srcReg];
+                        break;
+                    }
+
+                    case OpCode::GET_EXPORT: {
+                        Int dst = READ_SHORT(), moduleReg = READ_SHORT(), nameIdx = READ_SHORT();
+                        if (context->currentBase + moduleReg >= static_cast<Int>(context->stackSlots.size()))
+                            newVMError("GET_EXPORT module register OOB");
+                        Value& moduleVal = context->stackSlots[context->currentBase + moduleReg];
+                        if (!moduleVal.is<Module>())
+                            newVMError("GET_EXPORT chỉ dùng với module");
+                        if (nameIdx >= static_cast<Int>(proto->getChunk().getConstantPoolSize()))
+                            newVMError("GET_EXPORT index OOB");
+                        if (!proto->getChunk().getConstant(nameIdx).is<String>())
+                            newVMError("Export name must be a string");
+                        Str exportName = proto->getChunk().getConstant(nameIdx).get<String>();
+                        auto mod = moduleVal.get<Module>();
+                        auto it = mod->exports.find(exportName->utf8());
+                        if (it == mod->exports.end())
+                            newVMError("Module '" + mod->getName() + "' không có export '" + exportName->utf8() + "'.");
+                        context->stackSlots[context->currentBase + dst] = it->second;
+                        break;
+                    }
+
+                    case OpCode::GET_MODULE_EXPORT: {
+                        Int dst = READ_SHORT(), moduleReg = READ_SHORT(), nameIdx = READ_SHORT();
+                        if (context->currentBase + moduleReg >= static_cast<Int>(context->stackSlots.size()))
+                            newVMError("GET_MODULE_EXPORT module register OOB");
+                        Value& moduleVal = context->stackSlots[context->currentBase + moduleReg];
+                        if (!moduleVal.is<Module>()) newVMError("GET_MODULE_EXPORT chỉ dùng với module.");
+                        if (nameIdx >= static_cast<Int>(proto->getChunk().getConstantPoolSize()) || !proto->getChunk().getConstant(nameIdx).is<String>())
+                            newVMError("Export name phải là string hợp lệ");
+                        Str exportName = proto->getChunk().getConstant(nameIdx).get<String>();
+                        auto mod = moduleVal.get<Module>();
+                        auto it = mod->exports.find(exportName->utf8());
+                        if (it == mod->exports.end())
+                            newVMError("Module '" + mod->getName() + "' không có export '" + exportName->utf8() + "'.");
+                        context->stackSlots[context->currentBase + dst] = it->second;
+                        break;
+                    }
+
+                    case OpCode::IMPORT_ALL: {
+                        Int moduleReg = READ_SHORT();
+                        if (context->currentBase + moduleReg >= static_cast<Int>(context->stackSlots.size()))
+                            newVMError("IMPORT_ALL register OOB");
+                        Value& moduleVal = context->stackSlots[context->currentBase + moduleReg];
+                        if (!moduleVal.is<Module>()) newVMError("IMPORT_ALL chỉ dùng với module.");
+                        auto importedModule = moduleVal.get<Module>();
+                        auto currentModule = currentFrame->module;
+                        for (const auto& pair : importedModule->exports) {
+                            currentModule->globals[pair.first] = pair.second;
+                        }
+                        break;
+                    }
+
+                    // --- Classes / instances / methods ---
+                    case OpCode::NEW_CLASS: {
+                        Int dst = READ_SHORT(), nameIdx = READ_SHORT();
+                        if (nameIdx >= static_cast<Int>(proto->getChunk().getConstantPoolSize()) || !proto->getChunk().getConstant(nameIdx).is<String>())
+                            newVMError("NEW_CLASS name must be a string");
+                        Str name = proto->getChunk().getConstant(nameIdx).get<String>();
+                        auto klass = memoryManager->newObject<ObjClass>(name->utf8());
+                        context->stackSlots[context->currentBase + dst] = Value(klass);
+                        break;
+                    }
+
+                    case OpCode::NEW_INSTANCE: {
+                        Int dst = READ_SHORT(), classReg = READ_SHORT();
+                        Value& clsVal = context->stackSlots[context->currentBase + classReg];
+                        if (!clsVal.is<Class>()) newVMError("NEW_INSTANCE trên giá trị không phải class");
+                        auto klass = clsVal.get<Class>();
+                        auto instObj = memoryManager->newObject<ObjInstance>(klass);
+                        context->stackSlots[context->currentBase + dst] = Value(instObj);
+                        break;
+                    }
+
+                    case OpCode::GET_PROP: {
+                        Int dst = READ_SHORT(), objReg = READ_SHORT(), nameIdx = READ_SHORT();
+                        if (context->currentBase + objReg >= static_cast<Int>(context->stackSlots.size()) ||
+                            context->currentBase + dst >= static_cast<Int>(context->stackSlots.size()))
+                            newVMError("GET_PROP register OOB");
+                        if (nameIdx >= static_cast<Int>(proto->getChunk().getConstantPoolSize()) || !proto->getChunk().getConstant(nameIdx).is<String>())
+                            newVMError("Property name must be a string");
+                        Str name = proto->getChunk().getConstant(nameIdx).get<String>();
+                        Value& obj = context->stackSlots[context->currentBase + objReg];
+
+                        if (obj.is<Instance>()) {
+                            Instance inst = obj.get<Instance>();
+                            auto it = inst->fields.find(name->utf8());
+                            if (it != inst->fields.end()) {
+                                context->stackSlots[context->currentBase + dst] = it->second;
+                                break;
+                            }
+                        }
+                        if (auto prop = getMagicMethod(obj, name->utf8())) {
+                            context->stackSlots[context->currentBase + dst] = *prop;
+                            break;
+                        }
+                        context->stackSlots[context->currentBase + dst] = Value(Null{});
+                        break;
+                    }
+
+                    case OpCode::SET_PROP: {
+                        Int objReg = READ_SHORT(), nameIdx = READ_SHORT(), valReg = READ_SHORT();
+                        if (context->currentBase + objReg >= static_cast<Int>(context->stackSlots.size()) ||
+                            context->currentBase + valReg >= static_cast<Int>(context->stackSlots.size()))
+                            newVMError("SET_PROP register OOB");
+                        if (nameIdx >= static_cast<Int>(proto->getChunk().getConstantPoolSize()) || !proto->getChunk().getConstant(nameIdx).is<String>())
+                            newVMError("Property name must be a string");
+                        Str name = proto->getChunk().getConstant(nameIdx).get<String>();
+                        Value& obj = context->stackSlots[context->currentBase + objReg];
+                        Value& val = context->stackSlots[context->currentBase + valReg];
+
+                        if (auto mm = getMagicMethod(obj, "__setprop__")) {
+                            (void) call(*mm, { Value(memoryManager->newObject<ObjString>(name->utf8())), val });
+                            break;
+                        }
+                        if (obj.is<Instance>()) {
+                            Instance inst = obj.get<Instance>();
+                            inst->fields[name->utf8()] = val;
+                            break;
+                        }
+                        if (obj.is<Object>()) {
+                            Object m = obj.get<Object>();
+                            m->fields[name->utf8()] = val;
+                            break;
+                        }
+                        if (obj.is<Class>()) {
+                            Class cls = obj.get<Class>();
+                            if (!val.is<Function>() && !val.is<BoundMethod>()) newVMError("Method must be closure");
+                            cls->methods[name->utf8()] = val;
+                            break;
+                        }
+                        newVMError("SET_PROP not supported on type '" + toString(obj) + "'");
+                        break;
+                    }
+
+                    case OpCode::SET_METHOD: {
+                        size_t classReg = READ_SHORT(), nameIdx = READ_SHORT(), methodReg = READ_SHORT();
+                        Value& klassVal = context->stackSlots[context->currentBase + classReg];
+                        if (!klassVal.is<Class>()) newVMError("SET_METHOD only for class");
+                        if (nameIdx >= static_cast<Int>(proto->getChunk().getConstantPoolSize()) || !proto->getChunk().getConstant(nameIdx).is<String>())
+                            newVMError("Method name must be a string");
+                        Str name = proto->getChunk().getConstant(nameIdx).get<String>();
+                        if (!(context->stackSlots[context->currentBase + methodReg]).is<Function>())
+                            newVMError("Method value must be a closure");
+                        klassVal.get<Class>()->methods[name->utf8()] = context->stackSlots[context->currentBase + methodReg];
+                        break;
+                    }
+
+                    case OpCode::INHERIT: {
+                        size_t subClassReg = READ_SHORT(), superClassReg = READ_SHORT();
+                        Value& subClassVal = context->stackSlots[context->currentBase + subClassReg];
+                        Value& superClassVal = context->stackSlots[context->currentBase + superClassReg];
+                        if (!subClassVal.is<Class>() || !superClassVal.is<Class>()) newVMError("Cả hai toán hạng cho kế thừa phải là class.");
+                        subClassVal.get<Class>()->superclass = superClassVal.get<Class>();
+                        auto& subMethods = subClassVal.get<Class>()->methods;
+                        auto& superMethods = superClassVal.get<Class>()->methods;
+                        for (const auto& pair : superMethods) {
+                            if (subMethods.find(pair.first) == subMethods.end()) {
+                                subMethods[pair.first] = pair.second;
+                            }
+                        }
+                        break;
+                    }
+
+                    case OpCode::GET_SUPER: {
+                        size_t dst = READ_SHORT(), nameIdx = READ_SHORT();
+                        if (nameIdx >= proto->getChunk().getConstantPoolSize() || !proto->getChunk().getConstant(nameIdx).is<String>())
+                            newVMError("GET_SUPER name must be a string");
+                        Str methodName = proto->getChunk().getConstant(nameIdx).get<String>();
+
+                        Value& receiverVal = context->stackSlots[context->currentBase + 0];
+                        if (!receiverVal.is<Instance>()) newVMError("`super` can only be used inside a method.");
+                        Instance receiver = receiverVal.get<Instance>();
+
+                        if (!receiver->klass->superclass) newVMError("Class '" + receiver->klass->getName() + "' has no superclass.");
+                        Class superclass = *receiver->klass->superclass;
+
+                        auto it = superclass->methods.find(methodName->utf8());
+                        if (it == superclass->methods.end()) newVMError("Superclass '" + superclass->getName() + "' has no method named '" + methodName->utf8() + "'.");
+                        Value& method = it->second;
+                        if (!method.is<Function>()) newVMError("Superclass method is not a callable closure.");
+
+                        auto bound = memoryManager->newObject<ObjBoundMethod>(receiver, method.get<Function>());
+                        context->stackSlots[context->currentBase + dst] = Value(bound);
+                        break;
+                    }
+
+                    // --- Exception handling ---
+                    case OpCode::SETUP_TRY: {
+                        size_t target = READ_SHORT();
+                        ExceptionHandler h(target, context->callStack.size() - 1, context->stackSlots.size());
+                        context->exceptionHandlers.push_back(h);
+                        break;
+                    }
+
+                    case OpCode::POP_TRY: {
+                        if (!context->exceptionHandlers.empty()) context->exceptionHandlers.pop_back();
+                        break;
+                    }
+
+                    case OpCode::THROW: {
+                        size_t reg = READ_SHORT();
+                        throw VMError(toString(context->stackSlots[context->currentBase + reg]));
+                    }
+
+                    // --- Fallback ---
+                    default: {
+                        newVMError("Unsupported OpCode!");
+                        break;
+                    }
+                } // end switch
+            } // end GC scope
+        } catch (const VMError& e) {
+            handleRuntimeException(e);
+        } catch (const std::exception& e) {
+            std::cerr << "🤯 Lỗi C++ không lường trước trong VM.run: " << e.what() << std::endl;
+            context->callStack.clear();
+        }
+    } // end while
+}
+
+
+#include "vm/meow_vm.h"
+#include "common/expected.h"
+#include "diagnostics/diagnostic.h"
+#include "runtime/execution_context.h"
+#include "memory/memory_manager.h"
+
+Upvalue MeowVM::captureUpvalue(size_t slotIndex) {
+    if (slotIndex >= context->stackSlots.size())
+        newVMError("captureUpvalue: slotIndex OOB: " + std::to_string(slotIndex) + " stackSize=" + std::to_string(context->stackSlots.size()));
+
+    for (auto it = context->openUpvalues.rbegin(); it != context->openUpvalues.rend(); ++it) {
+        if ((*it)->slotIndex == slotIndex) {
+            return *it;
+        }
+
+        if ((*it)->slotIndex < slotIndex) {
+            break; 
+        }
+    }
+
+    auto newUv = memoryManager->newObject<ObjUpvalue>(slotIndex);
+
+    auto it = context->openUpvalues.begin();
+    while (it != context->openUpvalues.end() && (*it)->slotIndex < slotIndex) {
+        ++it;
+    }
+    context->openUpvalues.insert(it, newUv);
+    
+    return newUv;
+}
+
+void MeowVM::closeUpvalues(size_t slotIndex) {
+    while (!context->openUpvalues.empty() && context->openUpvalues.back()->slotIndex >= slotIndex) {
+        auto up = context->openUpvalues.back();
+        up->close(context->stackSlots[up->slotIndex]);
+        context->openUpvalues.pop_back();
+    }
+}
+
+void MeowVM::executeCall(const Value callee, size_t dst, size_t argStart, size_t argc, size_t base) {
+
+    std::vector<Value> args;
+    args.reserve(argc);
+    for (size_t i = 0; i < argc; ++i) {
+        args.push_back(context->stackSlots[base + argStart + i]);
+    }
+
+    if (callee.is<Function>()) {
+        auto closure = callee.get<Function>();
+        size_t newStart = context->stackSlots.size();
+        size_t needed = newStart + closure->getProto()->getNumRegisters();
+        context->stackSlots.resize(needed, Value(Null{}));
+
+        if (context->stackSlots.size() < needed) {
+            newVMError("context->stackSlots quá nhỏ khi resize trong executeCall. "
+                        "cần=" + std::to_string(needed) +
+                        " đã có=" + std::to_string(context->stackSlots.size()));
+        }
+
+        CallFrame newFrame(closure, newStart, context->callStack.back().module, closure->getProto()->getChunk().getCode(), dst);
+        context->callStack.push_back(newFrame);
+
+        for (size_t i = 0; i < std::min(argc, closure->getProto()->getNumRegisters()); ++i) {
+            context->stackSlots[newStart + i] = args[i];
+        }
+    } else if (callee.is<BoundMethod>()) {
+        auto boundMethod = callee.get<BoundMethod>();
+        if (!(boundMethod->callable).is<Function>()) newVMError("Bound method không chứa một closure có thể gọi được.");
+        auto methodClosure = boundMethod->callable;
+        size_t newStart = context->stackSlots.size();
+        context->stackSlots.resize(newStart + methodClosure->getProto()->getNumRegisters());
+        CallFrame newFrame(methodClosure, newStart, context->callStack.back().module, methodClosure->getProto()->getChunk().getCode(), dst);
+        context->callStack.push_back(newFrame);
+        context->stackSlots[newStart + 0] = Value(boundMethod->receiver);
+        for (size_t i = 0; i < std::min(argc, methodClosure->getProto()->getNumRegisters() - 1); ++i) {
+            context->stackSlots[newStart + 1 + i] = args[i];
+        }
+    } else if (callee.is<Class>()) {
+        auto klass = callee.get<Class>();
+        auto instance = memoryManager->newObject<ObjInstance>(klass);
+        if (dst != -1) context->stackSlots[base + dst] = Value(instance);
+        auto it = klass->methods.find("init");
+        if (it != klass->methods.end() && (it->second).is<Function>()) {
+            auto boundInit = memoryManager->newObject<ObjBoundMethod>(instance, it->second.get<Function>());
+            executeCall(Value(boundInit), -1, argStart, argc, base);
+        }
+    } else if (callee.is<NativeFn>()) {
+        auto func = callee.get<NativeFn>();
+        Value result = std::visit(
+            [&](auto&& func) -> Value {
+                using T = std::decay_t<decltype(func)>;
+                if constexpr (std::is_same_v<T, NativeFnSimple>) {
+                    return func(args);
+                } else if constexpr (std::is_same_v<T, NativeFnAdvanced>) {
+                    return func(this, args);
+                }
+                return Value(Null{});
+            },
+            func
+        );
+        if (dst != -1) context->stackSlots[base + dst] = result;
+    } else {
+        std::ostringstream os;
+        os << "Giá trị kiểu '" << toString(callee) << "' không thể gọi được: '" + toString(callee) + "' ";
+        os << "với các tham số là: ";
+        for (const auto& arg : args) {
+            os << toString(arg) << " ";
+        }
+        os << "\n";
+        newVMError(os.str());
+    }
+}
+
+Value MeowVM::call(const Value callee, Arguments args) {
+    size_t startCallDepth = context->callStack.size();
+
+    size_t argStartAbs = context->stackSlots.size();
+    context->stackSlots.resize(argStartAbs + args.size());
+    for (size_t i = 0; i < args.size(); ++i) {
+        context->stackSlots[argStartAbs + i] = args[i];
+    }
+
+    size_t dstAbs = context->stackSlots.size();
+    context->stackSlots.resize(dstAbs + 1);
+
+    size_t argStartRel = argStartAbs - context->currentBase;
+    Int dstRel      = static_cast<Int>(dstAbs - context->currentBase);
+    if (argStartRel >= static_cast<size_t>(context->callStack.back().closure->getProto()->getNumRegisters()) || dstRel < -1) {
+        newVMError("Internal error: invalid relative arg/dst in VM::call");
+    }
+
+    executeCall(callee, dstRel, argStartRel, args.size(), context->currentBase);
+
+    while (context->callStack.size() > startCallDepth) {
+
+        currentFrame = &context->callStack.back();
+        auto proto = currentFrame->closure->getProto();
+        context->currentBase = currentFrame->slotStart;
+
+        if ((currentFrame->ip - proto->getChunk().getCode()) >= static_cast<Int>(proto->getChunk().getCodeSize())) {
+
+            if (currentFrame->retReg != -1 && context->callStack.size() > 1) {
+                CallFrame& parent = context->callStack[context->callStack.size() - 2];
+                size_t idx = parent.slotStart + currentFrame->retReg;
+                if (idx < context->stackSlots.size()) context->stackSlots[idx] = Value(Null{});
+            }
+            context->callStack.pop_back();
+            continue;
+        }
+
+        try {
+            uint8_t opcode = *currentFrame->ip++;
+            // Dù code cũ dùng jumpTable, nhưng đoạn này bị lặp lại trong run() và call()
+            // Tốt nhất là refactor để chỉ dùng một vòng lặp run() duy nhất.
+            // Tạm thời, tôi sẽ để lại phần này như cũ để không làm thay đổi quá nhiều cấu trúc.
+        } catch (const VMError& e) {
+            handleRuntimeException(e);
+        } catch (const std::exception& e) {
+            std::cerr << "🤯 Lỗi C++ không lường trước trong VM::call loop: " << e.what() << std::endl;
+            context->callStack.clear();
+        }
+    }
+
+    Value result = context->stackSlots[dstAbs];
+
+    context->stackSlots.resize(argStartAbs);
+    return result;
+}
+
+#include "vm/meow_vm.h"
+#include "common/pch.h"
+
+Str MeowVM::opToString(OpCode op) const {
+    switch (op) {
+        case OpCode::LOAD_CONST: return "LOAD_CONST";
+        case OpCode::LOAD_NULL: return "LOAD_NULL";
+        case OpCode::LOAD_TRUE: return "LOAD_TRUE";
+        case OpCode::LOAD_FALSE: return "LOAD_FALSE";
+        case OpCode::LOAD_INT: return "LOAD_INT";
+        case OpCode::MOVE: return "MOVE";
+        case OpCode::ADD: return "ADD";
+        case OpCode::SUB: return "SUB";
+        case OpCode::MUL: return "MUL";
+        case OpCode::DIV: return "DIV";
+        case OpCode::MOD: return "MOD";
+        case OpCode::POW: return "POW";
+        case OpCode::EQ: return "EQ";
+        case OpCode::NEQ: return "NEQ";
+        case OpCode::GT: return "GT";
+        case OpCode::GE: return "GE";
+        case OpCode::LT: return "LT";
+        case OpCode::LE: return "LE";
+        case OpCode::NEG: return "NEG";
+        case OpCode::NOT: return "NOT";
+        case OpCode::GET_GLOBAL: return "GET_GLOBAL";
+        case OpCode::SET_GLOBAL: return "SET_GLOBAL";
+        case OpCode::GET_UPVALUE: return "GET_UPVALUE";
+        case OpCode::SET_UPVALUE: return "SET_UPVALUE";
+        case OpCode::CLOSURE: return "CLOSURE";
+        case OpCode::CLOSE_UPVALUES: return "CLOSE_UPVALUES";
+        case OpCode::JUMP: return "JUMP";
+        case OpCode::JUMP_IF_FALSE: return "JUMP_IF_FALSE";
+        case OpCode::JUMP_IF_TRUE: return "JUMP_IF_TRUE";
+        case OpCode::CALL: return "CALL";
+        case OpCode::RETURN: return "RETURN";
+        case OpCode::HALT: return "HALT";
+        case OpCode::NEW_ARRAY: return "NEW_ARRAY";
+        case OpCode::NEW_HASH: return "NEW_HASH";
+        case OpCode::GET_INDEX: return "GET_INDEX";
+        case OpCode::SET_INDEX: return "SET_INDEX";
+        case OpCode::GET_KEYS: return "GET_KEYS";
+        case OpCode::GET_VALUES: return "GET_VALUES";
+        case OpCode::NEW_CLASS: return "NEW_CLASS";
+        case OpCode::NEW_INSTANCE: return "NEW_INSTANCE";
+        case OpCode::GET_PROP: return "GET_PROP";
+        case OpCode::SET_PROP: return "SET_PROP";
+        case OpCode::SET_METHOD: return "SET_METHOD";
+        case OpCode::INHERIT: return "INHERIT";
+        case OpCode::GET_SUPER: return "GET_SUPER";
+        case OpCode::BIT_AND: return "BIT_AND";
+        case OpCode::BIT_OR: return "BIT_OR";
+        case OpCode::BIT_XOR: return "BIT_XOR";
+        case OpCode::BIT_NOT: return "BIT_NOT";
+        case OpCode::LSHIFT: return "LSHIFT";
+        case OpCode::RSHIFT: return "RSHIFT";
+        case OpCode::THROW: return "THROW";
+        case OpCode::SETUP_TRY: return "SETUP_TRY";
+        case OpCode::POP_TRY: return "POP_TRY";
+        case OpCode::IMPORT_MODULE: return "IMPORT_MODULE";
+        case OpCode::EXPORT: return "EXPORT";
+        case OpCode::GET_EXPORT: return "GET_EXPORT";
+        case OpCode::GET_MODULE_EXPORT: return "GET_MODULE_EXPORT";
+        case OpCode::IMPORT_ALL: return "IMPORT_ALL";
+        case OpCode::TOTAL_OPCODES: return "TOTAL_OPCODES";
+        default: return "UNKNOWN_OPCODE";
+    }
+}
+
+void MeowVM::newVMError(const Str& msg) {
+    std::ostringstream os;
+
+
+    auto valueToString = [&](const Value& v) -> Str {
+        if (v.is<Null>()) return "<null>";
+        if (v.is<Int>()) return std::to_string(v.get<Int>());
+        if (v.is<Real>()) {
+            std::ostringstream t;
+            Real r = v.get<Real>();
+            if (std::isnan(r)) return "NaN";
+            if (std::isinf(r)) return (r > 0) ? "Infinity" : "-Infinity";
+            t << r;
+            return t.str();
+        }
+        if (v.is<Bool>()) return v.get<Bool>() ? "true" : "false";
+        if (v.is<Str>()) return Str("\"") + v.get<Str>() + Str("\"");
+        if (v.is<Proto>()) return "<function proto>";
+        if (v.is<Function>()) return "<closure>";
+        if (v.is<Instance>()) return "<instance>";
+        if (v.is<Class>()) return "<class>";
+        if (v.is<Array>()) return "<array>";
+        if (v.is<Object>()) return "<object>";
+        if (v.is<Upvalue>()) return "<upvalue>";
+        if (v.is<Module>()) return "<module>";
+        if (v.is<BoundMethod>()) return "<bound method>";
+        if (v.is<NativeFn>()) return "<native fn>";
+        return "<unknown value>";
+    };
+
+
+    os << "!!! 🐛 LỖI NGHIÊM TRỌNG: `" << msg << "` 🐛 !!!\n";
+    os << "  - VM Base: " << context->currentBase << "\n";
+
+
+    ObjFunctionProto* proto = nullptr;
+    if (currentFrame && currentFrame->closure) proto = currentFrame->closure->proto;
+    if (proto) {
+        Int rawIp = currentFrame->ip;
+        Int errorIndex = (rawIp > 0) ? (rawIp - 1) : 0;
+        const Int codeSize = static_cast<Int>(proto->code.size());
+
+        os << "  - Source: " << proto->sourceName << "\n";
+        os << "  - Bytecode index (in-func): " << errorIndex << "\n";
+        os << "  - Opcode at error: "
+           << ((errorIndex >= 0 && errorIndex < codeSize) ? opToString(proto->code[static_cast<size_t>(errorIndex)].op) : Str("<out-of-range>"))
+           << "\n\n";
+
+
+        const Int range = 5;
+        if (codeSize > 0) {
+            const Int start = std::max<Int>(0, errorIndex - range);
+            const Int end = std::min<Int>(codeSize - 1, errorIndex + range);
+
+
+            int maxOpLen = 0;
+            for (Int i = start; i <= end; ++i) {
+                int len = static_cast<int>(opToString(proto->code[static_cast<size_t>(i)].op).size());
+                if (len > maxOpLen) maxOpLen = len;
+            }
+            int opField = std::max(10, maxOpLen + 2);
+
+            os << "  - Vùng bytecode (±" << range << "):\n";
+
+            std::ios::fmtflags savedFlags = os.flags();
+            for (Int i = start; i <= end; ++i) {
+                const Instruction& inst = proto->code[static_cast<size_t>(i)];
+
+                const char* prefix = (i == errorIndex) ? "  >> " : "     ";
+                os << prefix;
+
+
+                os << std::right << std::setw(4) << i << ": ";
+
+
+                os << std::left << std::setw(opField) << opToString(inst.op);
+
+
+                if (!inst.args.empty()) {
+                    os << "  args=[";
+                    for (size_t a = 0; a < inst.args.size(); ++a) {
+                        if (a) os << ", ";
+                        Int arg = inst.args[a];
+                        os << arg;
+                        // if (!proto->constantPool.empty() && arg >= 0 && static_cast<size_t>(arg) < proto->constantPool.size()) {
+                        //     os << " -> " << valueToString(proto->constantPool[static_cast<size_t>(arg)]);
+                        // }
+                    }
+                    os << "]";
+                } else {
+                    os << "  args=[]";
+                }
+
+                if (i == errorIndex) os << "    <-- lỗi\n"; else os << "\n";
+
+
+                os.flags(savedFlags);
+            }
+        } else {
+            os << "  - (Bytecode rỗng)\n";
+        }
+
+        if (!proto->constantPool.empty()) {
+            os << "\n  - Constant pool (preview up to 10):\n";
+            size_t maxShow = std::min<size_t>(proto->constantPool.size(), 10);
+            for (size_t ci = 0; ci < maxShow; ++ci) {
+                os << "     [" << ci << "]: " << valueToString(proto->constantPool[ci]) << "\n";
+            }
+        }
+    } else {
+        os << "  (Không có proto/closure để in chi tiết bytecode.)\n";
+    }
+    os << "\n";
+    os << "  - Call stack (most recent first):\n";
+    if (context->callStack.empty()) {
+        os << "     <empty call stack>\n";
+    } else {
+        for (int i = static_cast<int>(context->callStack.size()) - 1, depth = 0; i >= 0; --i, ++depth) {
+            const CallFrame& f = context->callStack[static_cast<size_t>(i)];
+            Str src = "<native>";
+            Int ip = f.ip;
+            if (f.closure && f.closure->proto) {
+                src = f.closure->proto->sourceName;
+            }
+            os << "     #" << depth << " " << src << "  ip=" << ip << "  slotStart=" << f.slotStart << "  retReg=" << f.retReg << "\n";
+        }
+    }
+
+    os << "\n";
+
+
+    os << "  - Stack snapshot (context->stackSlots size = " << context->stackSlots.size() << "):\n";
+    if (context->stackSlots.empty()) {
+        os << "     <empty stack>\n";
+    } else {
+        const size_t maxAround = 8;
+        Int base = context->currentBase;
+        size_t start = static_cast<size_t>(std::max<Int>(0, base));
+        size_t end = std::min(context->stackSlots.size(), start + maxAround);
+
+        std::ios::fmtflags savedFlags = os.flags();
+        for (size_t i = start; i < end; ++i) {
+            os << ((static_cast<Int>(i) == context->currentBase) ? "  >> " : "     ");
+            os << std::right << std::setw(4) << i << ": " << valueToString(context->stackSlots[i]) << "\n";
+            os.flags(savedFlags);
+        }
+        if (end < context->stackSlots.size()) {
+            os << "     ...\n";
+            size_t topCount = std::min<size_t>(3, context->stackSlots.size());
+            for (size_t i = context->stackSlots.size() - topCount; i < context->stackSlots.size(); ++i) {
+                os << "     (top) " << std::right << std::setw(4) << i << ": " << valueToString(context->stackSlots[i]) << "\n";
+                os.flags(savedFlags);
+            }
+        }
+    }
+
+    os << "\n";
+
+
+    os << "  - Open upvalues (" << context->openUpvalues.size() << "):\n";
+    if (context->openUpvalues.empty()) {
+        os << "     <none>\n";
+    } else {
+        for (size_t i = 0; i < context->openUpvalues.size(); ++i) {
+            const Upvalue uv = context->openUpvalues[i];
+            if (!uv) {
+                os << "     [" << i << "]: <null upvalue>\n";
+            } else {
+                os << "     [" << i << "]: slotIndex=" << uv->slotIndex << " state="
+                   << (uv->state == ObjUpvalue::State::OPEN ? "OPEN" : "CLOSED")
+                   << " value=" << (uv->state == ObjUpvalue::State::CLOSED ? valueToString(uv->closed) : "<live slot>") << "\n";
+            }
+        }
+    }
+
+    os << "\n";
+
+    os << "  - Exception handlers (" << context->exceptionHandlers.size() << "):\n";
+    if (context->exceptionHandlers.empty()) {
+        os << "     <none>\n";
+    } else {
+        for (size_t i = 0; i < context->exceptionHandlers.size(); ++i) {
+            const auto& h = context->exceptionHandlers[i];
+            os << "     [" << i << "] catchIp=" << h.catchIp << " frameDepth=" << h.frameDepth << " stackDepth=" << h.stackDepth << "\n";
+        }
+    }
+    throw VMError(os.str());
+}
+
+
+#include "vm/meow_vm.h"
+
+Function MeowVM::wrapClosure(const Value& maybeCallable) {
+    if (maybeCallable.is<Function>()) {
+        return maybeCallable.get<Function>();
+    }
+
+    if (maybeCallable.is<BoundMethod>()) {
+        BoundMethod bm = maybeCallable.get<BoundMethod>();
+        if (!bm || !bm->callable) newVMError("wrapClosure: BoundMethod không có callable.");
+        return bm->callable;
+    }
+
+
+    newVMError("wrapClosure: Giá trị không phải Closure/BoundMethod.");
+}
+
+std::optional<Value> MeowVM::getMagicMethod(const Value& obj, const std::string& name) {
+
+    if (obj.is<Instance>()) {
+        Instance inst = obj.get<Instance>();
+        if (!inst) return std::nullopt;
+
+
+        auto fit = inst->fields.find(name);
+        if (fit != inst->fields.end()) {
+            const Value& v = fit->second;
+
+            if (v.is<Function>()) {
+                Function f = v.get<Function>();
+                auto bm = memoryManager->newObject<ObjBoundMethod>(inst, f);
+                return Value(bm);
+            }
+
+            if (v.is<BoundMethod>()) {
+                BoundMethod inbm = v.get<BoundMethod>();
+                if (inbm && inbm->callable) {
+                    auto bm = memoryManager->newObject<ObjBoundMethod>(inst, inbm->callable);
+                    return Value(bm);
+                }
+            }
+
+            if (v.is<NativeFn>()) {
+                NativeFn orig = v.get<NativeFn>();
+                NativeFnAdvanced wrapper = [orig, inst](MeowEngine* engine, Arguments args)->Value {
+                    std::vector<Value> newArgs;
+                    newArgs.reserve(1 + args.size());
+                    newArgs.push_back(Value(inst));
+                    newArgs.insert(newArgs.end(), args.begin(), args.end());
+                    return std::visit([&](auto&& fn) -> Value {
+                        using T = std::decay_t<decltype(fn)>;
+                        if constexpr (std::is_same_v<T, NativeFnSimple>) {
+                            return fn(newArgs);
+                        } else {
+                            return fn(engine, newArgs);
+                        }
+                    }, orig);
+                };
+                return Value(wrapper);
+            }
+
+            return Value(v);
+        }
+
+
+        Class cur = inst->klass;
+        while (cur) {
+            auto mit = cur->methods.find(name);
+            if (mit != cur->methods.end()) {
+                const Value& mv = mit->second;
+                if (mv.is<Function>()) {
+                    Function f = mv.get<Function>();
+                    auto bm = memoryManager->newObject<ObjBoundMethod>(inst, f);
+                    return Value(bm);
+                }
+                if (mv.is<BoundMethod>()) {
+                    BoundMethod inbm = mv.get<BoundMethod>();
+                    if (inbm && inbm->callable) {
+                        auto bm = memoryManager->newObject<ObjBoundMethod>(inst, inbm->callable);
+                        return Value(bm);
+                    }
+                }
+                if (mv.is<NativeFn>()) {
+                    NativeFn orig = mv.get<NativeFn>();
+                    NativeFnAdvanced wrapper = [orig, inst](MeowEngine* engine, Arguments args)->Value {
+                        std::vector<Value> newArgs;
+                        newArgs.reserve(1 + args.size());
+                        newArgs.push_back(Value(inst));
+                        newArgs.insert(newArgs.end(), args.begin(), args.end());
+                        return std::visit([&](auto&& fn) -> Value {
+                            using T = std::decay_t<decltype(fn)>;
+                            if constexpr (std::is_same_v<T, NativeFnSimple>) {
+                                return fn(newArgs);
+                            } else {
+                                return fn(engine, newArgs);
+                            }
+                        }, orig);
+                    };
+                    return Value(wrapper);
+                }
+
+                return Value(mv);
+            }
+            if (cur->superclass) cur = *cur->superclass;
+            else break;
+        }
+    }
+
+
+    if (obj.is<Object>()) {
+        Object objPtr = obj.get<Object>();
+        if (!objPtr) return std::nullopt;
+        auto fit = objPtr->fields.find(name);
+        if (fit != objPtr->fields.end()) return Value(fit->second);
+        auto pgit = builtinGetters.find("Object");
+        if (pgit != builtinGetters.end()) {
+            auto it = pgit->second.find(name);
+            if (it != pgit->second.end()) {
+                return this->call(it->second, { obj }); 
+            }
+        }
+        auto pit = builtinMethods.find("Object");
+        if (pit != builtinMethods.end()) {
+            auto it = pit->second.find(name);
+            if (it != pit->second.end()) {
+                const Value& mv = it->second;
+                if (mv.is<NativeFn>()) {
+                    NativeFn orig = mv.get<NativeFn>();
+                    NativeFnAdvanced wrapper = [orig, objPtr](MeowEngine* engine, Arguments args)->Value {
+                        std::vector<Value> newArgs;
+                        newArgs.reserve(1 + args.size());
+                        newArgs.push_back(Value(objPtr));
+                        newArgs.insert(newArgs.end(), args.begin(), args.end());
+                        return std::visit([&](auto&& fn) -> Value {
+                            using T = std::decay_t<decltype(fn)>;
+                            if constexpr (std::is_same_v<T, NativeFnSimple>) {
+                                return fn(newArgs);
+                            } else {
+                                return fn(engine, newArgs);
+                            }
+                        }, orig);
+                    };
+                    return Value(wrapper);
+                }
+                return Value(it->second);
+            }
+        }
+        return std::nullopt;
+    }
+
+
+    if (obj.is<Array>()) {
+        Array arr = obj.get<Array>();
+        if (!arr) return std::nullopt;
+
+        auto pgit = builtinGetters.find("Array");
+        if (pgit != builtinGetters.end()) {
+            auto it = pgit->second.find(name);
+            if (it != pgit->second.end()) {
+                return this->call(it->second, { obj }); 
+            }
+        }
+        auto pit = builtinMethods.find("Array");
+        if (pit != builtinMethods.end()) {
+            auto it = pit->second.find(name);
+            if (it != pit->second.end()) {
+                const Value& mv = it->second;
+                if (mv.is<NativeFn>()) {
+                    NativeFn orig = mv.get<NativeFn>();
+                    NativeFnAdvanced wrapper = [orig, arr](MeowEngine* engine, Arguments args)->Value {
+                        std::vector<Value> newArgs;
+                        newArgs.reserve(1 + args.size());
+                        newArgs.push_back(Value(arr));
+                        newArgs.insert(newArgs.end(), args.begin(), args.end());
+                        return std::visit([&](auto&& fn) -> Value {
+                            using T = std::decay_t<decltype(fn)>;
+                            if constexpr (std::is_same_v<T, NativeFnSimple>) {
+                                return fn(newArgs);
+                            } else {
+                                return fn(engine, newArgs);
+                            }
+                        }, orig);
+                    };
+                    return Value(wrapper);
+                }
+                return Value(it->second);
+            }
+        }
+        return std::nullopt;
+    }
+
+
+    if (obj.is<String>()) {
+        auto pgit = builtinGetters.find("String");
+        if (pgit != builtinGetters.end()) {
+            auto it = pgit->second.find(name);
+            if (it != pgit->second.end()) {
+                return this->call(it->second, { obj }); 
+            }
+        }
+        auto pit = builtinMethods.find("String");
+        if (pit != builtinMethods.end()) {
+            auto it = pit->second.find(name);
+            if (it != pit->second.end()) {
+                const Value& mv = it->second;
+                if (mv.is<NativeFn>()) {
+                    NativeFn orig = mv.get<NativeFn>();
+                    NativeFnAdvanced wrapper = [orig, obj](MeowEngine* engine, Arguments args)->Value {
+                        std::vector<Value> newArgs;
+                        newArgs.reserve(1 + args.size());
+                        newArgs.push_back(obj);
+                        newArgs.insert(newArgs.end(), args.begin(), args.end());
+                        return std::visit([&](auto&& fn) -> Value {
+                            using T = std::decay_t<decltype(fn)>;
+                            if constexpr (std::is_same_v<T, NativeFnSimple>) {
+                                return fn(newArgs);
+                            } else {
+                                return fn(engine, newArgs);
+                            }
+                        }, orig);
+                    };
+                    return Value(wrapper);
+                }
+                return Value(it->second);
+            }
+        }
+        return std::nullopt;
+    }
+
+
+    if (obj.is<Int>() || obj.is<Real>() || obj.is<Bool>()) {
+        std::string typeName;
+        if (obj.is<Int>()) typeName = "Int";
+        else if (obj.is<Real>()) typeName = "Real";
+        else typeName = "Bool";
+
+        auto pgit = builtinGetters.find(typeName);
+        if (pgit != builtinGetters.end()) {
+            auto it = pgit->second.find(name);
+            if (it != pgit->second.end()) {
+                return this->call(it->second, { obj }); 
+            }
+        }
+
+        auto pit = builtinMethods.find(typeName);
+        if (pit != builtinMethods.end()) {
+            auto it = pit->second.find(name);
+            if (it != pit->second.end()) {
+                const Value& mv = it->second;
+                if (mv.is<NativeFn>()) {
+                    NativeFn orig = mv.get<NativeFn>();
+                    NativeFnAdvanced wrapper = [orig, obj](MeowEngine* engine, Arguments args)->Value {
+                        std::vector<Value> newArgs;
+                        newArgs.reserve(1 + args.size());
+                        newArgs.push_back(obj);
+                        newArgs.insert(newArgs.end(), args.begin(), args.end());
+                        return std::visit([&](auto&& fn) -> Value {
+                            using T = std::decay_t<decltype(fn)>;
+                            if constexpr (std::is_same_v<T, NativeFnSimple>) {
+                                return fn(newArgs);
+                            } else {
+                                return fn(engine, newArgs);
+                            }
+                        }, orig);
+                    };
+                    return Value(wrapper);
+                }
+                return Value(it->second);
+            }
+        }
+        return std::nullopt;
+    }
+
+
+    if (obj.is<Class>()) {
+        Class klass = obj.get<Class>();
+        if (!klass) return std::nullopt;
+        auto mit = klass->methods.find(name);
+        if (mit != klass->methods.end()) {
+            return Value(mit->second);
+        }
+    }
+
+    return std::nullopt;
+}
+
+#include "vm/meow_vm.h"
+#include "common/pch.h"
+
+template<class... Ts> 
+struct overloaded : Ts... {
+    using Ts::operator()...;
+};
+
+template<class... Ts> 
+overloaded(Ts...) -> overloaded<Ts...>;
+
+void MeowVM::defineNativeFunctions() {
+    auto nativePrint = [this](Arguments args) -> Value {
+        Str outputString;
+        for (size_t i = 0; i < args.size(); ++i) {
+            if (i > 0) outputString += " ";
+            outputString += _toString(args[i]);
+        }
+
+        std::cout << outputString << std::endl;
+        return Value(Null{});
+    };
+
+    auto typeOf = [](Arguments args) {
+        return Value(visit([](auto&& arg) -> std::string {
+            using T = std::decay_t<decltype(arg)>;
+            if constexpr (std::is_same_v<T, Null>) return "null";
+            if constexpr (std::is_same_v<T, Int>) return "int";
+            if constexpr (std::is_same_v<T, Real>) {
+                Real r = arg;
+                if (std::isinf(r)) return "real";
+                if (std::isnan(r)) return "real";
+                return "real";
+            }
+            if constexpr (std::is_same_v<T, Bool>) return "bool";
+            if constexpr (std::is_same_v<T, Str>) return "string";
+            if constexpr (std::is_same_v<T, Array>) return "array";
+            if constexpr (std::is_same_v<T, Object>) return "object";
+            if constexpr (std::is_same_v<T, Function>) return "function";
+            if constexpr (std::is_same_v<T, NativeFn>) return "native";
+            if constexpr (std::is_same_v<T, Upvalue>) return "upvalue";
+            if constexpr (std::is_same_v<T, Module>) return "module";
+            if constexpr (std::is_same_v<T, Proto>) return "proto";
+            
+        
+            if constexpr (std::is_same_v<T, Class>) return "class";
+            if constexpr (std::is_same_v<T, Instance>) return "instance";
+            if constexpr (std::is_same_v<T, BoundMethod>) return "bound_method";
+            return "unknown";
+        }, args[0]));
+    };
+
+    auto toInt = [this](Arguments args) {
+        return Value(this->_toInt(args[0]));
+    };
+
+    auto toReal = [this](Arguments args) {
+        return Value(this->_toDouble(args[0]));
+    };
+
+    auto toBool = [this](Arguments args) {
+        return Value(this->_isTruthy(args[0]));
+    };
+
+    auto toStr = [this](Arguments args) {
+        return Value(this->_toString(args[0]));
+    };
+
+    auto nativeLen = [](Arguments args) {
+        const auto& value = args[0];
+        return visit(overloaded{
+            [](const Str& s) { return Value((Int)s.length()); },
+            [](const Array& a)  { return Value((Int)a->elements_.size()); },
+            [](const Object& o) { return Value((Int)o->fields.size()); },
+            [](const auto&) -> Value { 
+                return Int(-1);
+            }
+        }, value);
+    };
+
+
+    auto nativeAssert = [this](Arguments args) {
+        if (!this->_isTruthy(args[0])) {
+            std::string message = "Assertion failed.";
+            if (args.size() > 1 && args[1].is<String>()) {
+                message = args[1].get<String>()->utf8();
+            }
+            newVMError(message);
+        }
+        return Value(Null{});
+    };
+
+
+    auto nativeOrd = [this](Arguments args) {
+        const auto& str = args[0].get<Str>();
+        if (str.length() != 1) {
+            newVMError("Hàm ord() chỉ chấp nhận chuỗi có đúng 1 ký tự.");
+        }
+        return Value((Int)static_cast<unsigned char>(str[0]));
+    };
+
+
+    auto nativeChar = [this](Arguments args) {
+        Int code = args[0].get<Int>();
+        if (code < 0 || code > 255) {
+            newVMError("Mã ASCII của hàm chr() phải nằm trong khoảng [0, 255].");
+
+        }
+        return Value(Str(1, static_cast<char>(code)));
+    };
+
+    auto nativeRange = [this](Arguments args) {
+        Int start = 0;
+        Int stop = 0;
+        Int step = 1;
+        size_t argCount = args.size();
+
+        if (argCount == 1) {
+            stop = args[0].get<Int>();
+        } else if (argCount == 2) {
+            start = args[0].get<Int>();
+            stop = args[1].get<Int>();
+        } else {
+            start = args[0].get<Int>();
+            stop = args[1].get<Int>();
+            step = args[2].get<Int>();
+        }
+
+        if (step == 0) {
+            newVMError("Tham số 'step' của hàm range() không thể bằng 0.");
+        }
+
+        auto resultArrayData = this->memoryManager->newObject<ObjArray>();
+        
+        if (step > 0) {
+            for (Int i = start; i < stop; i += step) {
+                resultArrayData->elements_.push_back(Value(i));
+            }
+        } else {
+            for (Int i = start; i > stop; i += step) {
+                resultArrayData->elements_.push_back(Value(i));
+            }
+        }
+
+        return Value(Array(resultArrayData));
+    };
+
+
+    Value printFunc = nativePrint;
+    std::unordered_map<Str, Value> natives;
+    natives["print"]  = Value(nativePrint);
+    natives["typeof"] = Value(typeOf);
+    natives["len"]    = Value(nativeLen);
+    natives["assert"] = Value(nativeAssert);
+    natives["int"]  = Value(toInt);
+    natives["real"] = Value(toReal);
+    natives["bool"] = Value(toBool);
+    natives["str"]  = Value(toStr);
+    natives["ord"]    = Value(nativeOrd);
+    natives["char"]   = Value(nativeChar);
+    natives["range"]  = Value(nativeRange);
+
+
+    auto nativeModule = memoryManager->newObject<ObjModule>("native", "native");
+    nativeModule->globals = natives;
+
+    moduleManager->addCache("native", nativeModule);
+
+    std::vector<Str> list = {"array", "object", "string"};
+
+    for (const auto& moduleName : list) {
+        try {
+            moduleManager->loadModule(moduleName, "native", true); 
+        } catch (const VMError& e) {
+            // std::cerr << "Warning: Could not preload standard module '" 
+                    //   << moduleName << "'. " << e.what() << std::endl;
+        }
+    }
+}
+
+
+
+
+// bytecode_parser.h và .cpp
+
+#pragma once
+
+#include "common/pch.h"
+#include "core/definitions.h"
+#include "common/expected.h"
+#include "diagnostics/diagnostic.h"
+
+class MemoryManager;
+
+class BytecodeParser {
+public:
+    BytecodeParser() = default;
+
+    Expected<bool, Diagnostic> parseFile(const std::string& filepath, MemoryManager& mm);
+
+    std::unordered_map<std::string, Proto> protos;
+
+private:
+    MemoryManager* memoryManager = nullptr;
+    std::string currentSourceName;
+    size_t currentLineNumber = 0;
+    size_t currentColumn = 0;
+    Proto currentProto = nullptr;
+
+    Diagnostic makeDiag(ParseError code, size_t col = 0, std::vector<std::string> args = {}) const;
+    Diagnostic makeDiag(ParseWarning code, size_t col = 0, std::vector<std::string> args = {}) const;
+    Diagnostic makeDiag(RuntimeError code, size_t col = 0, std::vector<std::string> args = {}) const;
+    Diagnostic makeDiag(SystemError code, size_t col = 0, std::vector<std::string> args = {}) const;
+
+    Expected<bool, Diagnostic> parseSource(const std::string& source, const std::string& sourceName = "<string>");
+
+    Expected<bool, Diagnostic> parseLine(const std::string& line);
+
+    Expected<bool, Diagnostic> parseDirective(const std::vector<std::pair<std::string, size_t>>& tokens);
+
+    Value parseConstValue(const std::string& token);
+
+    std::vector<std::pair<std::string, size_t>> tokenize(const std::string& line);
+
+    Expected<bool, Diagnostic> resolveAllLabels();
+    Expected<bool, Diagnostic> linkProtos();
+
+    static inline void skipComment(std::string& line);
+
+    struct LocalProtoData {
+        std::unordered_map<std::string, size_t> labels;
+        std::vector<std::tuple<size_t, size_t, std::string>> pendingJumps;
+    };
+    std::unordered_map<Proto, LocalProtoData> localProtoData;
+};
+
+#include "loader/bytecode_parser.h"
+#include "memory/memory_manager.h"
+#include "common/pch.h"
+#include "core/op_codes.h"
+#include "common/endian_helpers.h"
+
+/**
+ * @brief Removes spaces at the beginning and end of the string
+ * @param[in] str The string to trim
+ * @return The processed string
+ */
+static std::string trim(const std::string& str) {
+    size_t start = str.find_first_not_of(" \t\r\n");
+    if (start == std::string::npos) return "";
+    size_t end = str.find_last_not_of(" \t\r\n");
+    return str.substr(start, end - start + 1);
+}
+
+static std::string toUpper(const std::string& s) {
+    std::string res = s;
+    std::transform(res.begin(), res.end(), res.begin(), ::toupper);
+    return res;
+}
+
+inline void BytecodeParser::skipComment(std::string& line) {
+    bool inString = false;
+    for (size_t i = 0; i < line.size(); ++i) {
+        char c = line[i];
+        if (c == '"' ) {
+            bool escaped = (i > 0 && line[i - 1] == '\\');
+            if (!escaped) inString = !inString;
+        }
+        if (!inString && c == '#') {
+            line = line.substr(0, i);
+            break;
+        }
+    }
+    line = trim(line);
+}
+
+Diagnostic BytecodeParser::makeDiag(ParseError code, size_t col, std::vector<std::string> args) const {
+    Diagnostic d(code, currentSourceName.empty() ? std::string("[unknown file]") : currentSourceName, currentLineNumber, col, std::move(args));
+    d.level = Level::Error;
+    return d;
+}
+Diagnostic BytecodeParser::makeDiag(ParseWarning code, size_t col, std::vector<std::string> args) const {
+    Diagnostic d(code, currentSourceName.empty() ? std::string("[unknown file]") : currentSourceName, currentLineNumber, col, std::move(args));
+    d.level = Level::Warning;
+    return d;
+}
+Diagnostic BytecodeParser::makeDiag(RuntimeError code, size_t col, std::vector<std::string> args) const {
+    Diagnostic d(code, currentSourceName.empty() ? std::string("[unknown file]") : currentSourceName, currentLineNumber, col, std::move(args));
+    d.level = Level::Error;
+    return d;
+}
+Diagnostic BytecodeParser::makeDiag(SystemError code, size_t col, std::vector<std::string> args) const {
+    Diagnostic d(code, currentSourceName.empty() ? std::string("[unknown file]") : currentSourceName, currentLineNumber, col, std::move(args));
+    d.level = Level::Error;
+    return d;
+}
+
+Expected<bool, Diagnostic> BytecodeParser::parseFile(const std::string& filepath, MemoryManager& mm) {
+    this->memoryManager = &mm;
+    std::ifstream ifs(filepath);
+    if (!ifs) {
+        Diagnostic d(SystemError::GetExecutablePathFailed, filepath, std::vector<std::string>{ filepath });
+        d.level = Level::Error;
+        this->memoryManager = nullptr;
+        return Expected<bool, Diagnostic>(d);
+    }
+    std::ostringstream ss;
+    ss << ifs.rdbuf();
+    auto res = parseSource(ss.str(), filepath);
+    this->memoryManager = nullptr;
+    if (!res) return Expected<bool, Diagnostic>(res.error());
+    return Expected<bool, Diagnostic>(true);
+}
+
+std::vector<std::pair<std::string, size_t>> BytecodeParser::tokenize(const std::string& line) {
+    std::vector<std::pair<std::string, size_t>> out;
+    size_t i = 0;
+    size_t n = line.size();
+    while (i < n) {
+        while (i < n && (line[i] == ' ' || line[i] == '\t' || line[i] == '\r')) ++i;
+        if (i >= n) break;
+        size_t start = i;
+        std::string token;
+        if (line[i] == '"') {
+            token += line[i++];
+            bool escaping = false;
+            while (i < n) {
+                char c = line[i++];
+                token += c;
+                if (escaping) {
+                    escaping = false;
+                } else if (c == '\\') {
+                    escaping = true;
+                } else if (c == '"') {
+                    break;
+                }
+            }
+        } else {
+            while (i < n && !(line[i] == ' ' || line[i] == '\t' || line[i] == '\r')) {
+                token += line[i++];
+            }
+        }
+        out.emplace_back(token, start + 1);
+    }
+    return out;
+}
+
+Expected<bool, Diagnostic> BytecodeParser::parseSource(const std::string& source, const std::string& sourceName) {
+    protos.clear();
+    localProtoData.clear();
+    currentProto = nullptr;
+
+    currentSourceName = sourceName;
+    currentLineNumber = 0;
+    currentColumn = 0;
+
+    std::istringstream iss(source);
+    std::string line;
+    size_t lineno = 0;
+    while (std::getline(iss, line)) {
+        ++lineno;
+        currentLineNumber = lineno;
+        skipComment(line);
+        if (line.empty()) continue;
+        auto pline = parseLine(line);
+        if (!pline) return pline;
+    }
+
+    if (currentProto) {
+        Diagnostic d(ParseError::MissingEndFunc, currentSourceName, lineno, 0, {});
+        return Expected<bool, Diagnostic>(d);
+    }
+
+    auto r1 = resolveAllLabels();
+    if (!r1) return Expected<bool, Diagnostic>(r1.error());
+
+    auto r2 = linkProtos();
+    if (!r2) return Expected<bool, Diagnostic>(r2.error());
+
+    return Expected<bool, Diagnostic>(true);
+}
+
+Expected<bool, Diagnostic> BytecodeParser::parseLine(const std::string& line) {
+    auto tokens = tokenize(line);
+    if (tokens.empty()) return Expected<bool, Diagnostic>(true);
+
+    const auto& firstTok = tokens[0];
+    std::string t0 = firstTok.first;
+    currentColumn = firstTok.second;
+
+    if (!t0.empty() && t0[0] == '.') {
+        return parseDirective(tokens);
+    }
+    
+    if (!t0.empty() && t0.back() == ':') {
+        if (!currentProto) {
+            return Expected<bool, Diagnostic>(makeDiag(ParseError::LabelOutsideFunction, currentColumn, {}));
+        }
+        std::string labelName = t0.substr(0, t0.length() - 1);
+        auto& ldata = localProtoData[currentProto];
+        if (ldata.labels.count(labelName)) {
+            return Expected<bool, Diagnostic>(makeDiag(ParseError::DuplicateLabel, currentColumn, {labelName}));
+        }
+        ldata.labels[labelName] = currentProto->getChunk().getCodeSize();
+        tokens.erase(tokens.begin());
+        if (tokens.empty()) {
+            return Expected<bool, Diagnostic>(true);
+        }
+        t0 = tokens[0].first;
+    }
+
+    if (!currentProto) {
+        return Expected<bool, Diagnostic>(makeDiag(ParseError::InstructionOutsideFunction, currentColumn, {}));
+    }
+
+    static const std::unordered_map<std::string, OpCode> OPC = {
+        {"LOAD_CONST", OpCode::LOAD_CONST}, {"LOAD_NULL", OpCode::LOAD_NULL}, {"LOAD_TRUE", OpCode::LOAD_TRUE},
+        {"LOAD_FALSE", OpCode::LOAD_FALSE}, {"LOAD_INT", OpCode::LOAD_INT}, {"MOVE", OpCode::MOVE},
+        {"ADD", OpCode::ADD}, {"SUB", OpCode::SUB}, {"MUL", OpCode::MUL}, {"DIV", OpCode::DIV},
+        {"MOD", OpCode::MOD}, {"POW", OpCode::POW}, {"EQ", OpCode::EQ}, {"NEQ", OpCode::NEQ},
+        {"GT", OpCode::GT}, {"GE", OpCode::GE}, {"LT", OpCode::LT}, {"LE", OpCode::LE},
+        {"NEG", OpCode::NEG}, {"NOT", OpCode::NOT}, {"GET_GLOBAL", OpCode::GET_GLOBAL},
+        {"SET_GLOBAL", OpCode::SET_GLOBAL}, {"GET_UPVALUE", OpCode::GET_UPVALUE}, {"SET_UPVALUE", OpCode::SET_UPVALUE},
+        {"CLOSURE", OpCode::CLOSURE}, {"CLOSE_UPVALUES", OpCode::CLOSE_UPVALUES}, {"JUMP", OpCode::JUMP},
+        {"JUMP_IF_FALSE", OpCode::JUMP_IF_FALSE}, {"JUMP_IF_TRUE", OpCode::JUMP_IF_TRUE}, {"CALL", OpCode::CALL}, {"RETURN", OpCode::RETURN},
+        {"HALT", OpCode::HALT}, {"NEW_ARRAY", OpCode::NEW_ARRAY}, {"NEW_HASH", OpCode::NEW_HASH},
+        {"GET_INDEX", OpCode::GET_INDEX}, {"SET_INDEX", OpCode::SET_INDEX}, {"GET_KEYS", OpCode::GET_KEYS}, {"GET_VALUES", OpCode::GET_VALUES}, {"NEW_CLASS", OpCode::NEW_CLASS},
+        {"NEW_INSTANCE", OpCode::NEW_INSTANCE}, {"GET_PROP", OpCode::GET_PROP}, {"SET_PROP", OpCode::SET_PROP},
+        {"SET_METHOD", OpCode::SET_METHOD}, {"INHERIT", OpCode::INHERIT}, {"GET_SUPER", OpCode::GET_SUPER}, {"BIT_AND", OpCode::BIT_AND},
+        {"BIT_OR", OpCode::BIT_OR}, {"BIT_XOR", OpCode::BIT_XOR}, {"BIT_NOT", OpCode::BIT_NOT},
+        {"LSHIFT", OpCode::LSHIFT}, {"RSHIFT", OpCode::RSHIFT}, {"THROW", OpCode::THROW},
+        {"SETUP_TRY", OpCode::SETUP_TRY}, {"POP_TRY", OpCode::POP_TRY}, {"IMPORT_MODULE", OpCode::IMPORT_MODULE},
+        {"EXPORT", OpCode::EXPORT}, {"GET_EXPORT", OpCode::GET_EXPORT}, {"GET_MODULE_EXPORT", OpCode::GET_MODULE_EXPORT}, {"IMPORT_ALL", OpCode::IMPORT_ALL}
+    };
+
+    std::string upperCmd = toUpper(t0);
+    auto it = OPC.find(upperCmd);
+    if (it == OPC.end()) {
+        return Expected<bool, Diagnostic>(makeDiag(ParseError::UnknownOpcode, currentColumn, { t0 }));
+    }
+    OpCode op = it->second;
+    Chunk& chunk = currentProto->getChunk();
+    auto &ldata = localProtoData[currentProto];
+
+    auto parseIntToken = [&](size_t idx, bool& ok) -> uint16_t {
+        ok = false;
+        if (idx >= tokens.size()) return 0;
+        try {
+            long long val = std::stoll(tokens[idx].first);
+            if (val < 0 || val > UINT16_MAX) return 0;
+            ok = true;
+            return static_cast<uint16_t>(val);
+        } catch (...) {
+            return 0;
+        }
+    };
+
+    if (op == OpCode::CALL) {
+        if (tokens.size() < 5) { // CALL dst, func, start, argc
+             return Expected<bool, Diagnostic>(makeDiag(ParseError::IncorrectArgumentCount, currentColumn, { t0, "4" }));
+        }
+        bool retOk;
+        uint16_t retReg = parseIntToken(1, retOk);
+        
+        if (retOk && retReg == 0xFFFF) {
+            chunk.writeByte(static_cast<uint8_t>(OpCode::CALL_VOID), currentLineNumber);
+            for (size_t i = 2; i < tokens.size(); ++i) {
+                bool ok;
+                uint16_t v = parseIntToken(i, ok);
+                if (!ok) return Expected<bool, Diagnostic>(makeDiag(ParseError::InvalidArgumentType, tokens[i].second, { tokens[i].first, t0 }));
+                chunk.writeShort(v, currentLineNumber);
+            }
+            return Expected<bool, Diagnostic>(true);
+        }
+    }
+    
+    chunk.writeByte(static_cast<uint8_t>(op), currentLineNumber);
+
+    bool ok;
+    if (op == OpCode::JUMP || op == OpCode::SETUP_TRY) {
+        if (tokens.size() < 2) return Expected<bool, Diagnostic>(makeDiag(ParseError::IncorrectArgumentCount, currentColumn, { t0, "1" }));
+        uint16_t val = parseIntToken(1, ok);
+        if (ok) {
+            chunk.writeAddress(val, currentLineNumber);
+        } else {
+            ldata.pendingJumps.emplace_back(chunk.getCodeSize(), 0, tokens[1].first);
+            chunk.writeAddress(0, currentLineNumber); // placeholder 2 bytes
+        }
+    } else if (op == OpCode::JUMP_IF_FALSE || op == OpCode::JUMP_IF_TRUE) {
+        if (tokens.size() < 3) return Expected<bool, Diagnostic>(makeDiag(ParseError::IncorrectArgumentCount, currentColumn, { t0, "2" }));
+        uint16_t v1 = parseIntToken(1, ok);
+        if (!ok) return Expected<bool, Diagnostic>(makeDiag(ParseError::InvalidArgumentType, tokens[1].second, { tokens[1].first, t0 }));
+        chunk.writeShort(v1, currentLineNumber);
+        uint16_t v2 = parseIntToken(2, ok);
+        if (ok) {
+            chunk.writeAddress(v2, currentLineNumber);
+        } else {
+            ldata.pendingJumps.emplace_back(chunk.getCodeSize(), 0, tokens[2].first);
+            chunk.writeAddress(0, currentLineNumber);
+        }
+    } else {
+        for (size_t i = 1; i < tokens.size(); ++i) {
+            uint16_t v = parseIntToken(i, ok);
+            if (!ok) return Expected<bool, Diagnostic>(makeDiag(ParseError::InvalidArgumentType, tokens[i].second, { tokens[i].first, t0 }));
+            chunk.writeShort(v, currentLineNumber);
+        }
+    }
+    return Expected<bool, Diagnostic>(true);
+}
+
+Expected<bool, Diagnostic> BytecodeParser::parseDirective(const std::vector<std::pair<std::string, size_t>>& tokens) {
+    if (tokens.empty()) return Expected<bool, Diagnostic>(true);
+    const std::string& cmd = tokens[0].first;
+    currentColumn = tokens[0].second;
+
+    if (cmd == ".func") {
+        if (currentProto) {
+            return Expected<bool, Diagnostic>(makeDiag(ParseError::NestedFunctionDefinition, currentColumn, {}));
+        }
+        if (tokens.size() < 2) {
+            return Expected<bool, Diagnostic>(makeDiag(ParseError::MissingArgument, currentColumn, {}));
+        }
+        const std::string& name = tokens[1].first;
+        currentProto = memoryManager->newObject<ObjFunctionProto>(0, 0, name);
+        currentProto->sourceName = currentSourceName;
+        protos[name] = currentProto;
+        localProtoData[currentProto] = LocalProtoData{};
+    } else if (cmd == ".endfunc") {
+        if (!currentProto) {
+            return Expected<bool, Diagnostic>(makeDiag(ParseError::MissingEndFunc, currentColumn, {}));
+        }
+        currentProto = nullptr;
+    } else {
+        if (!currentProto) {
+            return Expected<bool, Diagnostic>(makeDiag(ParseError::DirectiveOutsideFunction, currentColumn, { cmd }));
+        }
+
+        if (cmd == ".registers") {
+            if (tokens.size() < 2) {
+                return Expected<bool, Diagnostic>(makeDiag(ParseError::MissingArgument, currentColumn, {}));
+            }
+            try {
+                currentProto->numRegisters = static_cast<size_t>(std::stoull(tokens[1].first));
+            } catch (...) {
+                return Expected<bool, Diagnostic>(makeDiag(ParseError::InvalidArgumentType, tokens[1].second, { tokens[1].first, ".registers" }));
+            }
+        } else if (cmd == ".upvalues") {
+            if (tokens.size() < 2) {
+                return Expected<bool, Diagnostic>(makeDiag(ParseError::MissingArgument, currentColumn, {}));
+            }
+            try {
+                currentProto->numUpvalues = static_cast<size_t>(std::stoull(tokens[1].first));
+            } catch (...) {
+                return Expected<bool, Diagnostic>(makeDiag(ParseError::InvalidArgumentType, tokens[1].second, { tokens[1].first, ".upvalues" }));
+            }
+        } else if (cmd == ".const") {
+            if (tokens.size() < 2) {
+                std::string allTokens;
+                for(size_t i = 1; i < tokens.size(); ++i) allTokens += tokens[i].first + " ";
+                return Expected<bool, Diagnostic>(makeDiag(ParseError::InvalidConstant, currentColumn, { allTokens }));
+            }
+            std::string rest;
+            for (size_t i = 1; i < tokens.size(); ++i) {
+                if (i > 1) rest += " ";
+                rest += tokens[i].first;
+            }
+            try {
+                currentProto->chunk.constantPool.push_back(parseConstValue(rest));
+            } catch (const Diagnostic& diag) {
+                return Expected<bool, Diagnostic>(diag);
+            } catch (...) {
+                return Expected<bool, Diagnostic>(makeDiag(ParseError::InvalidConstant, currentColumn, { rest }));
+            }
+        } else if (cmd == ".upvalue") {
+            if (tokens.size() < 4) {
+                return Expected<bool, Diagnostic>(makeDiag(ParseError::MissingArgument, currentColumn, {}));
+            }
+            size_t uvIndex;
+            std::string uvType;
+            size_t slot;
+            try {
+                uvIndex = static_cast<size_t>(std::stoll(tokens[1].first));
+                uvType = tokens[2].first;
+                slot = static_cast<size_t>(std::stoll(tokens[3].first));
+            } catch (...) {
+                // return Expected<bool, Diagnostic>(makeDiag(ParseError::InvalidArgumentType, currentColumn, {}));
+                return Expected<bool, Diagnostic>(makeDiag(ParseError::InvalidArgumentType, currentColumn, {"<invalid integer>", ".upvalue"}));
+            }
+            if (uvType != "local" && uvType != "parent_upvalue") {
+                return Expected<bool, Diagnostic>(makeDiag(ParseError::InvalidUpvalueType, tokens[2].second, { uvType }));
+            }
+            bool isLocal = (uvType == "local");
+            if (currentProto->upvalueDescs.size() <= static_cast<size_t>(uvIndex)) {
+                currentProto->upvalueDescs.resize(static_cast<size_t>(uvIndex) + 1);
+            }
+            currentProto->upvalueDescs[static_cast<size_t>(uvIndex)] = UpvalueDesc(isLocal, static_cast<int>(slot));
+        } else {
+            return Expected<bool, Diagnostic>(makeDiag(ParseError::UnknownDirective, currentColumn, { cmd }));
+        }
+    }
+
+    return Expected<bool, Diagnostic>(true);
+}
+
+static std::string unescapeString(const std::string& s) {
+    std::string result;
+    result.reserve(s.length());
+    bool escaping = false;
+    for (char c : s) {
+        if (escaping) {
+            switch (c) {
+                case 'n': result += '\n'; break;
+                case 't': result += '\t'; break;
+                case 'r': result += '\r'; break;
+                case '"': result += '"'; break;
+                case '\\': result += '\\'; break;
+                default:
+                    result += '\\';
+                    result += c;
+                    break;
+            }
+            escaping = false;
+        } else if (c == '\\') {
+            escaping = true;
+        } else {
+            result += c;
+        }
+    }
+    return result;
+}
+
+Value BytecodeParser::parseConstValue(const std::string& token) {
+    std::string s = trim(token);
+    if (s.size() >= 2 && s.front() == '"' && s.back() == '"') {
+        std::string inner = s.substr(1, s.size() - 2);
+        return Value(memoryManager->newObject<ObjString>(inner));
+    }
+    if (!s.empty() && s.front() == '@') {
+        return Value(memoryManager->newObject<ObjString>(std::string("::function_proto::") + s.substr(1)));
+    }
+    if (s.find('.') != std::string::npos) {
+        try { return Value(std::stod(s)); } catch (...) {}
+    }
+    try { return Value(std::stoi(s)); } catch (...) {}
+    if (s == "true") return Value(true);
+    if (s == "false") return Value(false);
+    if (s == "null") return Value(Null{});
+
+    throw makeDiag(ParseError::InvalidConstant, currentColumn, { s });
+}
+
+Expected<bool, Diagnostic> BytecodeParser::resolveAllLabels() {
+    for (auto &pair : protos) {
+        auto proto = pair.second;
+        auto itlocal = localProtoData.find(proto);
+        if (itlocal == localProtoData.end()) continue;
+
+        auto &ldata = itlocal->second;
+        Chunk& chunk = proto->chunk;
+        uint8_t* code = chunk.code.data();
+
+        for (const auto& jump : ldata.pendingJumps) {
+            size_t patchOffset = std::get<0>(jump);
+            std::string labelName = std::get<2>(jump);
+            
+            auto itLabel = ldata.labels.find(labelName);
+            if (itLabel == ldata.labels.end()) {
+                Diagnostic d(ParseError::LabelNotFound, proto->getSourceName(), 0, 0, { labelName, proto->getSourceName() });
+                return Expected<bool, Diagnostic>(d);
+            }
+            
+            uint16_t jumpTarget = static_cast<uint16_t>(itLabel->second);
+            
+            // Patch the bytecode with little-endian uint16_t
+            // writeU16LE(code + patchOffset, jumpTarget);
+            code[patchOffset] = static_cast<uint8_t>(jumpTarget & 0xFF);
+            code[patchOffset + 1] = static_cast<uint8_t>((jumpTarget >> 8) & 0xFF);
+        }
+    }
+    return Expected<bool, Diagnostic>(true);
+}
+
+Expected<bool, Diagnostic> BytecodeParser::linkProtos() {
+    const std::string prefix = "::function_proto::";
+    for (auto& pair : protos) {
+        auto proto = pair.second;
+        for (size_t i = 0; i < proto->chunk.constantPool.size(); ++i) {
+            if (proto->chunk.constantPool[i].is<String>()) {
+                auto s = proto->chunk.constantPool[i].get<String>()->utf8();
+                if (s.rfind(prefix, 0) == 0) {
+                    std::string protoName = s.substr(prefix.length());
+                    auto it = protos.find(protoName);
+                    if (it != protos.end()) {
+                        proto->chunk.constantPool[i] = Value(it->second);
+                    } else {
+                        Diagnostic d(ParseError::LabelNotFound, proto->sourceName, 0, 0, { protoName, proto->getSourceName() });
+                        return Expected<bool, Diagnostic>(d);
+                    }
+                }
+            }
+        }
+    }
+    return Expected<bool, Diagnostic>(true);
+}
+
+
+// disassemble.h
+
+#pragma once
+
+#include "common/pch.h"
+#include "core/op_codes.h"
+#include "core/definitions.h"
+#include "runtime/chunk.h"
+
+static inline std::string opCodeToString(OpCode op) {
+    switch (op) {
+        case OpCode::LOAD_CONST: return "LOAD_CONST";
+        case OpCode::LOAD_NULL: return "LOAD_NULL";
+        case OpCode::LOAD_TRUE: return "LOAD_TRUE";
+        case OpCode::LOAD_FALSE: return "LOAD_FALSE";
+        case OpCode::LOAD_INT: return "LOAD_INT";
+        case OpCode::MOVE: return "MOVE";
+        case OpCode::ADD: return "ADD";
+        case OpCode::SUB: return "SUB";
+        case OpCode::MUL: return "MUL";
+        case OpCode::DIV: return "DIV";
+        case OpCode::MOD: return "MOD";
+        case OpCode::POW: return "POW";
+        case OpCode::EQ: return "EQ";
+        case OpCode::NEQ: return "NEQ";
+        case OpCode::GT: return "GT";
+        case OpCode::GE: return "GE";
+        case OpCode::LT: return "LT";
+        case OpCode::LE: return "LE";
+        case OpCode::NEG: return "NEG";
+        case OpCode::NOT: return "NOT";
+        case OpCode::GET_GLOBAL: return "GET_GLOBAL";
+        case OpCode::SET_GLOBAL: return "SET_GLOBAL";
+        case OpCode::GET_UPVALUE: return "GET_UPVALUE";
+        case OpCode::SET_UPVALUE: return "SET_UPVALUE";
+        case OpCode::CLOSURE: return "CLOSURE";
+        case OpCode::CLOSE_UPVALUES: return "CLOSE_UPVALUES";
+        case OpCode::JUMP: return "JUMP";
+        case OpCode::JUMP_IF_FALSE: return "JUMP_IF_FALSE";
+        case OpCode::JUMP_IF_TRUE: return "JUMP_IF_TRUE";
+        case OpCode::CALL: return "CALL";
+        case OpCode::RETURN: return "RETURN";
+        case OpCode::HALT: return "HALT";
+        case OpCode::NEW_ARRAY: return "NEW_ARRAY";
+        case OpCode::NEW_HASH: return "NEW_HASH";
+        case OpCode::GET_INDEX: return "GET_INDEX";
+        case OpCode::SET_INDEX: return "SET_INDEX";
+        case OpCode::GET_KEYS: return "GET_KEYS";
+        case OpCode::GET_VALUES: return "GET_VALUES";
+        case OpCode::NEW_CLASS: return "NEW_CLASS";
+        case OpCode::NEW_INSTANCE: return "NEW_INSTANCE";
+        case OpCode::GET_PROP: return "GET_PROP";
+        case OpCode::SET_PROP: return "SET_PROP";
+        case OpCode::SET_METHOD: return "SET_METHOD";
+        case OpCode::INHERIT: return "INHERIT";
+        case OpCode::GET_SUPER: return "GET_SUPER";
+        case OpCode::BIT_AND: return "BIT_AND";
+        case OpCode::BIT_OR: return "BIT_OR";
+        case OpCode::BIT_XOR: return "BIT_XOR";
+        case OpCode::BIT_NOT: return "BIT_NOT";
+        case OpCode::LSHIFT: return "LSHIFT";
+        case OpCode::RSHIFT: return "RSHIFT";
+        case OpCode::THROW: return "THROW";
+        case OpCode::SETUP_TRY: return "SETUP_TRY";
+        case OpCode::POP_TRY: return "POP_TRY";
+        case OpCode::IMPORT_MODULE: return "IMPORT_MODULE";
+        case OpCode::EXPORT: return "EXPORT";
+        case OpCode::GET_EXPORT: return "GET_EXPORT";
+        case OpCode::GET_MODULE_EXPORT: return "GET_MODULE_EXPORT";
+        case OpCode::IMPORT_ALL: return "IMPORT_ALL";
+        default: return "UNKNOWN_OP";
+    }
+}
+
+// ---------- helper: read var-length arg (matching your writeArg) ----------
+static inline uint16_t readVarArg (const std::vector<uint8_t>& code, size_t &ip, size_t codeSize) noexcept {
+    if (ip >= codeSize) return 0;
+    uint8_t b0 = code[ip++];
+    if ((b0 & 0x80) == 0) {
+        // single byte value (0..127)
+        return static_cast<uint16_t>(b0);
+    } else {
+        // two-byte encoding: low7 in b0, high bits in next byte
+        if (ip >= codeSize) {
+            // truncated: return what we can
+            return static_cast<uint16_t>(b0 & 0x7F);
+        }
+        uint8_t b1 = code[ip++];
+        return static_cast<uint16_t>((b0 & 0x7F) | (static_cast<uint16_t>(b1) << 7));
+    }
+};
+
+// ---------- keep an i64 reader for immediates (LOAD_INT) ----------
+static inline int64_t read_i64_le (const std::vector<uint8_t>& code, size_t &ip, size_t codeSize) noexcept {
+    if (ip + 7 >= codeSize) {
+        // truncated: read remaining bytes little-endian
+        int64_t out = 0;
+        int shift = 0;
+        while (ip < codeSize && shift < 64) {
+            out |= (static_cast<int64_t>(code[ip++]) << shift);
+            shift += 8;
+        }
+        return out;
+    }
+    uint64_t out = 0;
+    for (int b = 0; b < 8; ++b) {
+        out |= (static_cast<uint64_t>(code[ip++]) << (8 * b));
+    }
+    return static_cast<int64_t>(out);
+};
+
+// ---------- disassembleChunk using readVarArg ----------
+inline std::string disassembleChunk(const Chunk& chunk) noexcept{
+    std::ostringstream os;
+    const auto &code = chunk.code;
+    size_t codeSize = code.size();
+
+    auto valueToString = [&](const Value& val) -> std::string {
+        if (val.is<Null>()) return "<null>";
+        if (val.is<Int>()) return std::to_string(val.get<Int>());
+        if (val.is<Real>()) {
+            std::ostringstream t;
+            Real r = val.get<Real>();
+            if (std::isnan(r)) return "NaN";
+            if (std::isinf(r)) return (r > 0) ? "Infinity" : "-Infinity";
+            t << r;
+            return t.str();
+        }
+        if (val.is<Bool>()) return val.get<Bool>() ? "true" : "false";
+        if (val.is<String>()) {
+            ObjString* s = val.get<String>();
+            return s ? std::string("\"") + s->utf8() + "\"" : std::string("\"<null string>\"");
+        }
+        if (val.is<Proto>()) {
+            ObjFunctionProto* p = val.get<Proto>();
+            return p ? std::string("<function proto '") + p->getSourceName() + "'>" : "<function proto null>";
+        }
+        if (val.is<Function>()) return "<closure>";
+        if (val.is<Instance>()) return "<instance>";
+        if (val.is<Class>()) return "<class>";
+        if (val.is<Array>()) return "<array>";
+        if (val.is<Object>()) return "<object>";
+        if (val.is<Upvalue>()) return "<upvalue>";
+        if (val.is<Module>()) return "<module>";
+        if (val.is<BoundMethod>()) return "<bound method>";
+        if (val.is<NativeFn>()) return "<native fn>";
+        return "<unknown value>";
+    };
+
+    os << "  - Bytecode:\n";
+    for (size_t ip = 0; ip < codeSize; ) {
+        size_t instOffset = ip;
+        uint8_t rawOpcode = code[ip++]; // opcode always 1 byte
+        OpCode op = static_cast<OpCode>(rawOpcode);
+
+        os << "     " << std::right << std::setw(4) << static_cast<Int>(instOffset) << ": ";
+        std::string opname = opCodeToString(op);
+        os << std::left << std::setw(12) << opname;
+
+        // Parse args using readVarArg where appropriate.
+        switch (op) {
+            case OpCode::MOVE: {
+                uint16_t dst = readVarArg(code, ip, codeSize);
+                uint16_t src = readVarArg(code, ip, codeSize);
+                os << "  args=[dst=" << dst << ", src=" << src << "]";
+                break;
+            }
+            case OpCode::LOAD_CONST: {
+                uint16_t dst = readVarArg(code, ip, codeSize);
+                uint16_t cidx = readVarArg(code, ip, codeSize);
+                std::string valStr = (cidx < chunk.constantPool.size()) ? valueToString(chunk.constantPool[cidx]) : "<const OOB>";
+                os << "  args=[dst=" << dst << ", cidx=" << cidx << " -> " << valStr << "]";
+                break;
+            }
+            case OpCode::LOAD_INT: {
+                uint16_t dst = readVarArg(code, ip, codeSize);
+                int64_t v = read_i64_le(code, ip, codeSize);
+                os << "  args=[dst=" << dst << ", val=" << v << "]";
+                break;
+            }
+            case OpCode::LOAD_NULL:
+            case OpCode::LOAD_TRUE:
+            case OpCode::LOAD_FALSE: {
+                uint16_t dst = readVarArg(code, ip, codeSize);
+                os << "  args=[dst=" << dst << "]";
+                break;
+            }
+
+            // Binary ops: dst, r1, r2
+            case OpCode::ADD: case OpCode::SUB: case OpCode::MUL: case OpCode::DIV:
+            case OpCode::MOD: case OpCode::POW: case OpCode::EQ: case OpCode::NEQ:
+            case OpCode::GT: case OpCode::GE: case OpCode::LT: case OpCode::LE:
+            case OpCode::BIT_AND: case OpCode::BIT_OR: case OpCode::BIT_XOR:
+            case OpCode::LSHIFT: case OpCode::RSHIFT: {
+                uint16_t dst = readVarArg(code, ip, codeSize);
+                uint16_t r1  = readVarArg(code, ip, codeSize);
+                uint16_t r2  = readVarArg(code, ip, codeSize);
+                os << "  args=[dst=" << dst << ", r1=" << r1 << ", r2=" << r2 << "]";
+                break;
+            }
+
+            // Unary:
+            case OpCode::NEG: case OpCode::NOT: case OpCode::BIT_NOT: {
+                uint16_t dst = readVarArg(code, ip, codeSize);
+                uint16_t src = readVarArg(code, ip, codeSize);
+                os << "  args=[dst=" << dst << ", src=" << src << "]";
+                break;
+            }
+
+            case OpCode::GET_GLOBAL: {
+                uint16_t dst = readVarArg(code, ip, codeSize);
+                uint16_t cidx = readVarArg(code, ip, codeSize);
+                std::string name = (cidx < chunk.constantPool.size()) ? valueToString(chunk.constantPool[cidx]) : "<bad-name>";
+                os << "  args=[dst=" << dst << ", nameIdx=" << cidx << " -> " << name << "]";
+                break;
+            }
+            case OpCode::SET_GLOBAL: {
+                uint16_t nameIdx = readVarArg(code, ip, codeSize);
+                uint16_t src = readVarArg(code, ip, codeSize);
+                std::string name = (nameIdx < chunk.constantPool.size()) ? valueToString(chunk.constantPool[nameIdx]) : "<bad-name>";
+                os << "  args=[nameIdx=" << nameIdx << " -> " << name << ", src=" << src << "]";
+                break;
+            }
+
+            case OpCode::GET_UPVALUE: {
+                uint16_t dst = readVarArg(code, ip, codeSize);
+                uint16_t uv = readVarArg(code, ip, codeSize);
+                os << "  args=[dst=" << dst << ", uvIndex=" << uv << "]";
+                break;
+            }
+            case OpCode::SET_UPVALUE: {
+                uint16_t uv = readVarArg(code, ip, codeSize);
+                uint16_t src = readVarArg(code, ip, codeSize);
+                os << "  args=[uvIndex=" << uv << ", src=" << src << "]";
+                break;
+            }
+
+            case OpCode::CLOSURE: {
+                uint16_t dst = readVarArg(code, ip, codeSize);
+                uint16_t protoIdx = readVarArg(code, ip, codeSize);
+                os << "  args=[dst=" << dst << ", protoIdx=" << protoIdx;
+                if (protoIdx < chunk.constantPool.size() && chunk.constantPool[protoIdx].is<Proto>()) {
+                    ObjFunctionProto* inner = chunk.constantPool[protoIdx].get<Proto>();
+                    if (inner) {
+                        size_t nUp = inner->getNumUpvalues();
+                        os << ", upvalues=" << nUp << " {";
+                        for (size_t ui = 0; ui < nUp; ++ui) {
+                            if (ip >= codeSize) { os << "??"; break; }
+                            uint16_t isLocal = readVarArg(code, ip, codeSize);
+                            uint16_t index   = readVarArg(code, ip, codeSize);
+                            os << (ui ? ", " : "") << (isLocal ? "local" : "env") << ":" << index;
+                        }
+                        os << "}";
+                    } else {
+                        os << ", <null proto>";
+                    }
+                } else {
+                    os << ", <proto not found in const pool>";
+                }
+                os << "]";
+                break;
+            }
+
+            case OpCode::CLOSE_UPVALUES: {
+                uint16_t startSlot = readVarArg(code, ip, codeSize);
+                os << "  args=[startSlot=" << startSlot << "]";
+                break;
+            }
+
+            case OpCode::JUMP: {
+                uint16_t target = readVarArg(code, ip, codeSize);
+                os << "  args=[target=" << target << "]";
+                break;
+            }
+            case OpCode::JUMP_IF_FALSE:
+            case OpCode::JUMP_IF_TRUE: {
+                uint16_t reg = readVarArg(code, ip, codeSize);
+                uint16_t target = readVarArg(code, ip, codeSize);
+                os << "  args=[reg=" << reg << ", target=" << target << "]";
+                break;
+            }
+
+            case OpCode::CALL: {
+                uint16_t dst = readVarArg(code, ip, codeSize);
+                uint16_t fnReg = readVarArg(code, ip, codeSize);
+                uint16_t argStart = readVarArg(code, ip, codeSize);
+                uint16_t argc = readVarArg(code, ip, codeSize);
+                os << "  args=[dst=" << dst << ", fnReg=" << fnReg
+                   << ", argStart=" << argStart << ", argc=" << argc << "]";
+                break;
+            }
+
+            case OpCode::RETURN: {
+                // As your emitter supports optional arg, we try to read 0 or 1 arg.
+                // Convention: if writer emitted a register it will be encoded as varArg; we attempt to read it.
+                // If there are no bytes left, it is empty. If we accidentally read something that is actually next opcode,
+                // this can mis-sync; hence the emitter should be consistent. (If you prefer explicit flag, we can change.)
+                if (ip >= codeSize) {
+                    os << "  args=[]";
+                } else {
+                    // We'll peek: try to decode varArg but *do not* treat 0..(max opcode value) specially.
+                    // This is best-effort: if your emitter sometimes omits the arg, this will consume next opcode incorrectly.
+                    // If that happens, tell me and we add an explicit byte flag in encoding.
+                    size_t saveIp = ip;
+                    uint16_t maybeReg = readVarArg(code, ip, codeSize);
+                    os << "  args=[retReg=" << maybeReg << "]";
+                }
+                break;
+            }
+
+            case OpCode::HALT: {
+                os << "  args=[]";
+                break;
+            }
+
+            case OpCode::NEW_ARRAY:
+            case OpCode::NEW_HASH: {
+                uint16_t dst = readVarArg(code, ip, codeSize);
+                uint16_t startIdx = readVarArg(code, ip, codeSize);
+                uint16_t count = readVarArg(code, ip, codeSize);
+                os << "  args=[dst=" << dst << ", startIdx=" << startIdx << ", count=" << count << "]";
+                break;
+            }
+
+            case OpCode::GET_INDEX: {
+                uint16_t dst = readVarArg(code, ip, codeSize);
+                uint16_t srcReg = readVarArg(code, ip, codeSize);
+                uint16_t keyReg = readVarArg(code, ip, codeSize);
+                os << "  args=[dst=" << dst << ", src=" << srcReg << ", key=" << keyReg << "]";
+                break;
+            }
+
+            case OpCode::SET_INDEX: {
+                uint16_t srcReg = readVarArg(code, ip, codeSize);
+                uint16_t keyReg = readVarArg(code, ip, codeSize);
+                uint16_t valReg = readVarArg(code, ip, codeSize);
+                os << "  args=[src=" << srcReg << ", key=" << keyReg << ", val=" << valReg << "]";
+                break;
+            }
+
+            case OpCode::GET_KEYS:
+            case OpCode::GET_VALUES: {
+                uint16_t dst = readVarArg(code, ip, codeSize);
+                uint16_t srcReg = readVarArg(code, ip, codeSize);
+                os << "  args=[dst=" << dst << ", src=" << srcReg << "]";
+                break;
+            }
+
+            case OpCode::IMPORT_MODULE: {
+                uint16_t dst = readVarArg(code, ip, codeSize);
+                uint16_t pathIdx = readVarArg(code, ip, codeSize);
+                os << "  args=[dst=" << dst << ", pathIdx=" << pathIdx << "]";
+                break;
+            }
+            case OpCode::EXPORT: {
+                uint16_t nameIdx = readVarArg(code, ip, codeSize);
+                uint16_t srcReg = readVarArg(code, ip, codeSize);
+                os << "  args=[nameIdx=" << nameIdx << ", src=" << srcReg << "]";
+                break;
+            }
+            case OpCode::GET_EXPORT:
+            case OpCode::GET_MODULE_EXPORT: {
+                uint16_t dst = readVarArg(code, ip, codeSize);
+                uint16_t moduleReg = readVarArg(code, ip, codeSize);
+                uint16_t nameIdx = readVarArg(code, ip, codeSize);
+                os << "  args=[dst=" << dst << ", moduleReg=" << moduleReg << ", nameIdx=" << nameIdx << "]";
+                break;
+            }
+            case OpCode::IMPORT_ALL: {
+                uint16_t moduleReg = readVarArg(code, ip, codeSize);
+                os << "  args=[moduleReg=" << moduleReg << "]";
+                break;
+            }
+
+            case OpCode::NEW_CLASS: {
+                uint16_t dst = readVarArg(code, ip, codeSize);
+                uint16_t nameIdx = readVarArg(code, ip, codeSize);
+                os << "  args=[dst=" << dst << ", nameIdx=" << nameIdx << "]";
+                break;
+            }
+
+            case OpCode::NEW_INSTANCE: {
+                uint16_t dst = readVarArg(code, ip, codeSize);
+                uint16_t classReg = readVarArg(code, ip, codeSize);
+                os << "  args=[dst=" << dst << ", classReg=" << classReg << "]";
+                break;
+            }
+
+            case OpCode::GET_PROP: {
+                uint16_t dst = readVarArg(code, ip, codeSize);
+                uint16_t objReg = readVarArg(code, ip, codeSize);
+                uint16_t nameIdx = readVarArg(code, ip, codeSize);
+                os << "  args=[dst=" << dst << ", objReg=" << objReg << ", nameIdx=" << nameIdx << "]";
+                break;
+            }
+
+            case OpCode::SET_PROP: {
+                uint16_t objReg = readVarArg(code, ip, codeSize);
+                uint16_t nameIdx = readVarArg(code, ip, codeSize);
+                uint16_t valReg = readVarArg(code, ip, codeSize);
+                os << "  args=[objReg=" << objReg << ", nameIdx=" << nameIdx << ", valReg=" << valReg << "]";
+                break;
+            }
+
+            case OpCode::SET_METHOD: {
+                uint16_t classReg = readVarArg(code, ip, codeSize);
+                uint16_t nameIdx = readVarArg(code, ip, codeSize);
+                uint16_t methodReg = readVarArg(code, ip, codeSize);
+                os << "  args=[classReg=" << classReg << ", nameIdx=" << nameIdx << ", methodReg=" << methodReg << "]";
+                break;
+            }
+
+            case OpCode::INHERIT: {
+                uint16_t subClassReg = readVarArg(code, ip, codeSize);
+                uint16_t superClassReg = readVarArg(code, ip, codeSize);
+                os << "  args=[subClassReg=" << subClassReg << ", superClassReg=" << superClassReg << "]";
+                break;
+            }
+
+            case OpCode::GET_SUPER: {
+                uint16_t dst = readVarArg(code, ip, codeSize);
+                uint16_t nameIdx = readVarArg(code, ip, codeSize);
+                os << "  args=[dst=" << dst << ", nameIdx=" << nameIdx << "]";
+                break;
+            }
+
+            case OpCode::SETUP_TRY: {
+                uint16_t target = readVarArg(code, ip, codeSize);
+                os << "  args=[target=" << target << "]";
+                break;
+            }
+
+            case OpCode::POP_TRY: {
+                os << "  args=[]";
+                break;
+            }
+
+            case OpCode::THROW: {
+                uint16_t reg = readVarArg(code, ip, codeSize);
+                os << "  args=[reg=" << reg << "]";
+                break;
+            }
+
+            default: {
+                os << "  args=[<unparsed>]";
+                break;
+            }
+        }
+
+        os << "\n";
+    }
+
+    return os.str();
+}
+
+// casting.h
+
+#include "core/definitions.h"
+#include "common/disassemble.h"
+
+inline int64_t toInt(Value value) noexcept {
+    using i64_limits = std::numeric_limits<int64_t>;
+    return value.visit(
+        [](Null) -> int64_t { return 0; },
+        [](Int i) -> int64_t { return i; },
+        [](Real r) -> int64_t { 
+            if (std::isinf(r)) {
+                return (r > 0) ? i64_limits::max() : i64_limits::min();
+            }
+            if (std::isnan(r)) return 0;
+            return static_cast<int64_t>(r);
+        },
+        [](Bool b) -> int64_t { return b ? 1 : 0; },
+        [](const String& s) -> int64_t {
+            // By using std::string_view, it's make everything safe and faster
+            std::string_view str = s->utf8();
+
+            // By using unsigned long long - the largest primitive integer type
+            // We can avoid many issues about overflow
+            using ull = unsigned long long;
+
+            // Trim whitespace in the first and end of the string
+            // We can't do many way to trim whitespace instead
+            // Like using trim() function or using erase and find_if,...
+            size_t left = 0;
+            while (left < str.size() && std::isspace(static_cast<unsigned char>(str[left]))) ++left;
+            size_t right = str.size();
+            while (right > left && std::isspace(static_cast<unsigned char>(str[right - 1]))) --right;
+            if (left >= right) return 0;
+
+            // str.remove_prefix(left);
+            // str.remove_suffix(str.size() - right);
+            str = str.substr(left, right - left);
+
+            bool negative = false;
+            size_t pos = 0;
+            if (str[0] == '-') {
+                negative = true;
+                str.remove_prefix(1);
+            } else if (str[0] == '+') {
+                str.remove_prefix(1);
+            }
+
+            int base = 10;
+
+            if (str.size() >= 2) {
+                std::string_view prefix = str.substr(0, 2);
+
+                // We can handle binary right there
+                if (prefix == "0b" || prefix == "0B") {
+                    ull accumulator = 0;
+                    const ull limit = static_cast<ull>(i64_limits::max()); // The maximum value Integer can reach
+
+                    str.remove_prefix(2);
+                    for (char c : str) {
+                        if (c == '0' || c == '1') {
+                            int d = c - '0';
+
+                            // Here is our algorithm
+                            // accumulator_new = old_accumulator * 2 + d
+                            // And new_accumulator must be less than or equal to limit
+                            // new_accumulator <= limits
+                            // We can't do that right on the accumulator, it's can overflow
+                            // But we can operate on limits by transform our formula
+                            // old_accumulator * 2 + d <= limits
+                            // -> old_accumulator <= (limits - d) / 2
+                            // And now, we can know if the value is overflow and handle it
+
+                            if (accumulator > (limit - d) / 2) {
+                                return negative ? i64_limits::min() : i64_limits::max();
+                            }
+
+                            // This expression equals to accumulator * 2 + d
+                            // But we can use this to make a bit faster
+                            accumulator = (accumulator << 1) | static_cast<ull>(d);
+                        } else break;
+                    }
+
+                    int64_t result = static_cast<int64_t>(accumulator);
+                    return negative ? -result : result;
+                } else if (prefix == "0x" || prefix == "0X") {
+                    base = 16;
+                    str.remove_prefix(2);
+                } else if (prefix == "0o" || prefix == "0O") {
+                    base = 8;
+                    str.remove_prefix(2);
+                }
+            }
+
+            // Handles Integer casting
+            // Using strtoll is a bit faster than using stoll
+            // We still can use stoll if we need C++ casting style
+            // However it's just a choice between many different choices
+
+            errno = 0;
+            char* endptr = nullptr;
+            const std::string token(str.begin(), str.end());
+            long long val = std::strtoll(token.c_str(), &endptr, base);
+            if (endptr == token.c_str()) return 0;
+            if (errno == ERANGE) {
+                return (val > 0) ? i64_limits::max() : i64_limits::min();
+            }
+            if (val > static_cast<long long>(i64_limits::max())) {
+                return i64_limits::max();
+            }
+            if (val < static_cast<long long>(i64_limits::min())) {
+                return i64_limits::min();
+            }
+
+            return static_cast<int64_t>(val);
+        },
+        [](auto&&) -> int64_t { return 0; }
+    );
+}
+
+inline double toReal(Value value) noexcept {
+    return value.visit(
+        [](Null) -> double { return 0.0; },
+        [](Int i) -> double { return static_cast<double>(i); },
+        [](Real r) -> double { return r; },
+        [](Bool b) -> double { return b ? 1.0 : 0.0; },
+        [](String s) -> double {
+            std::string str = s->utf8();
+
+            for (auto &c : str) {
+                c = static_cast<char>(std::tolower((unsigned char)c));
+            }
+
+            if (str == "nan") {
+                return std::numeric_limits<double>::quiet_NaN();
+            }
+            if (str == "infinity" || str == "+infinity" || str == "inf" || str == "+inf") {
+                return std::numeric_limits<double>::infinity();
+            }
+            if (str == "-infinity" || str == "-inf") {
+                return -std::numeric_limits<double>::infinity();
+            }
+
+            const char* cs = str.c_str();
+            errno = 0;
+            char* endptr = nullptr;
+            double val = std::strtod(cs, &endptr);
+
+            if (cs == endptr) return 0.0;
+
+            // Checks range
+            if (errno == ERANGE) {
+                return (val > 0) ? std::numeric_limits<double>::infinity() : -std::numeric_limits<double>::infinity();
+            }
+            return static_cast<double>(val);
+        },
+        [](auto&&) -> double { return 0.0; }
+    );
+}
+
+inline bool asBool(Value value) noexcept {
+    return value.visit(
+        [](Null) -> bool { return 0; },
+        [](Int i) -> bool { return i != 0; },
+        [](Real r) -> bool {
+            return r != 0.0 && !std::isnan(r);
+        },
+        [](Bool b) -> bool { return b; },
+        [](String s) -> bool { !s->empty(); },
+        [](Array a) -> bool { return !a->empty(); },
+        [](Object o) -> bool { return !o->empty(); },
+        [](auto&&) -> bool { return true; }
+    );
+}
+
+inline std::string toString(Value value) noexcept {
+    return value.visit(
+        [](Null) -> std::string { return "null"; },
+        [](Int val) -> std::string { return std::to_string(val); },
+        [](Real val) -> std::string {
+            if (std::isnan(val)) return "NaN";
+            if (std::isinf(val)) return (val > 0) ? "Infinity" : "-Infinity";
+
+            if (val == 0.0 && std::signbit(val)) return "-0";
+            std::ostringstream os;
+            os << std::fixed << std::setprecision(15) << val;
+
+            // Removes extra '0' character
+            std::string str = os.str();
+            auto pos = str.find('.');
+
+            // This is impossible for floating-point string value
+            // How it can be? Maybe C++ casted failed
+            if (pos == std::string::npos) return str;
+            size_t end = str.size();
+
+            // Search from the end of string makes a bit faster
+            while (end > pos + 1 && str[end - 1] == '0') --end;
+            if (end == pos + 1) --pos;
+            return str.substr(0, end);
+        },
+        [](Bool val) -> std::string { return val ? "true" : "false"; },
+        [](String str) -> std::string { return str->utf8(); },
+        [](Array arr) -> std::string {
+            std::string out = "[";
+            for (size_t i = 0; i < arr->size(); ++i) {
+                if (i > 0) out += ", ";
+                out += toString(arr->getElement(i));
+            }
+            out += "]";
+            return out;
+        },
+        [](Object obj) -> std::string {
+            std::string out = "{";
+            bool first = true;
+            for (auto it = obj->begin(); it != obj->end(); ++it) {
+                if (!first) out += ", ";
+                out += it->first + ": " + toString((it->second));
+                first = false;
+            }
+            out += "}";
+            return out;
+        },
+        [](Class klass) {
+            return "<class '" + klass->getName() + "'>";
+        },
+        [](Instance inst) {
+            return "<" + inst->getClass()->getName() + " object>";
+        },
+        [](BoundMethod) {
+            return "<bound method>";
+        },
+        [](Module mod) {
+            return "<module '" + mod->getName() + "'>";
+        },
+        [](NativeFn) {
+            return "<native fn>";
+        },
+        [](Function func) {
+            return "<fn '" + func->getProto()->getSourceName() + "'>";
+        },
+        [](Proto proto) -> std::string {
+            if (!proto) return "<null proto>";
+            std::ostringstream os;
+
+            os << "<function proto '" << proto->getSourceName() << "'>\n";
+
+            // code size (chunk-based)
+            os << "  - code size: " << proto->getChunk().getCodeSize() << "\n";
+
+            // disassemble bằng helper chung
+            if (!proto->getChunk().isCodeEmpty()) {
+                os << disassembleChunk(proto->getChunk());
+            } else {
+                os << "  - (Bytecode rỗng)\n";
+            }
+
+            // local helper: in ngắn cho các Value (giữ tương tự như trước, trả Str để fit với code cũ)
+            auto valueToString = [&](Value val) -> std::string {
+                if (val.is<Null>()) return "<null>";
+                if (val.is<Int>()) return std::to_string(val.get<Int>());
+                if (val.is<Real>()) {
+                    std::ostringstream t;
+                    Real r = val.get<Real>();
+                    if (std::isnan(r)) return "NaN";
+                    if (std::isinf(r)) return (r > 0) ? "Infinity" : "-Infinity";
+                    t << r;
+                    return t.str();
+                }
+                if (val.is<Bool>()) return val.get<Bool>() ? "true" : "false";
+                if (val.is<String>()) {
+                    return "\"" + val.get<String>()->utf8() + "\"";
+                }
+                if (val.is<Proto>()) {
+                    ObjFunctionProto* p = val.get<Proto>();
+                    return p ? ("<function proto '" + p->getSourceName() + "'>") : "<function proto>";
+                }
+                if (val.is<Function>()) return "<closure>";
+                if (val.is<Instance>()) return "<instance>";
+                if (val.is<Class>()) return "<class>";
+                if (val.is<Array>()) return "<array>";
+                if (val.is<Object>()) return "<object>";
+                if (val.is<Upvalue>()) return "<upvalue>";
+                if (val.is<Module>()) return "<module>";
+                if (val.is<BoundMethod>()) return "<bound method>";
+                if (val.is<NativeFn>()) return "<native fn>";
+                return "<unknown value>";
+            };
+
+            // constant pool preview (up to 10)
+            if (!proto->getChunk().isConstantPoolEmpty()) {
+                os << "\n  - Constant pool (preview up to 10):\n";
+                size_t maxShow = std::min<size_t>(proto->getChunk().getConstantPoolSize(), 10);
+                for (size_t ci = 0; ci < maxShow; ++ci) {
+                    os << "     [" << ci << "]: " << valueToString(proto->getChunk().getConstant(ci)) << "\n";
+                }
+            }
+
+            return os.str();
+        },
+    [](Upvalue) {
+        return "<upvalue>";
+    },
+    [](auto&&) {
+        return "<unknown value>";
+    }
+    );
+}
+
+// module_manager.cpp
+
+#include "module/module_manager.h"
+#include "memory/memory_manager.h"
+#include "vm/meow_engine.h"
+
+#if defined(_WIN32)
+#include <windows.h>
+#else
+#include <dlfcn.h>
+#endif
+
+#if !defined(_WIN32)
+#include <unistd.h>
+#include <limits.h>
+#endif
+#if defined(__APPLE__)
+#include <mach-o/dyld.h>
+#endif
+
+// --- helper: lấy thư mục chứa executable (cross-platform) ---
+static std::filesystem::path getExecutableDir() {
+#if defined(_WIN32)
+    char buf[MAX_PATH];
+    DWORD len = GetModuleFileNameA(NULL, buf, MAX_PATH);
+    if (len == 0) throw std::runtime_error("GetModuleFileNameA failed");
+    return std::filesystem::path(std::string(buf, static_cast<size_t>(len))).parent_path();
+#elif defined(__linux__)
+    char buf[PATH_MAX];
+    ssize_t len = readlink("/proc/self/exe", buf, sizeof(buf) - 1);
+    if (len == -1) throw std::runtime_error("readlink(/proc/self/exe) failed");
+    buf[len] = '\0';
+    return std::filesystem::path(std::string(buf)).parent_path();
+#elif defined(__APPLE__)
+    uint32_t size = 0;
+    _NSGetExecutablePath(nullptr, &size); // will set size
+    std::vector<char> buf(size);
+    if (_NSGetExecutablePath(buf.data(), &size) != 0) {
+        throw std::runtime_error("_NSGetExecutablePath failed");
+    }
+    std::filesystem::path p(buf.data());
+    return std::filesystem::absolute(p).parent_path();
+#else
+    return std::filesystem::current_path();
+#endif
+}
+
+// --- helper: expand token $ORIGIN in a path string to exeDir ---
+static std::string expandOriginToken(const std::string& raw, const std::filesystem::path& exeDir) {
+    std::string out;
+    const std::string token = "$ORIGIN";
+    size_t pos = 0;
+    while (true) {
+        size_t p = raw.find(token, pos);
+        if (p == std::string::npos) {
+            out.append(raw.substr(pos));
+            break;
+        }
+        out.append(raw.substr(pos, p - pos));
+        out.append(exeDir.string());
+        pos = p + token.size();
+    }
+    return out;
+}
+
+// --- detect stdlib root: đọc file meow-root cạnh binary (1 lần, cached) ---
+static std::filesystem::path detectStdlibRoot_cached() {
+    static std::optional<std::filesystem::path> cached;
+    if (cached.has_value()) return *cached;
+
+    std::filesystem::path result;
+    try {
+        std::filesystem::path exeDir = getExecutableDir(); // thư mục chứa binary
+        std::filesystem::path configFile = exeDir / "meow-root";
+
+        // 1) nếu có file meow-root, đọc và expand $ORIGIN
+        if (std::filesystem::exists(configFile)) {
+            std::ifstream in(configFile);
+            if (in) {
+                std::string line;
+                std::getline(in, line);
+                // trim (simple)
+                while (!line.empty() && (line.back() == '\n' || line.back() == '\r' || line.back() == ' ' || line.back() == '\t')) line.pop_back();
+                size_t i = 0;
+                while (i < line.size() && (line[i] == ' ' || line[i] == '\t')) ++i;
+                if (i > 0) line = line.substr(i);
+
+                if (!line.empty()) {
+                    std::string expanded = expandOriginToken(line, exeDir);
+                    result = std::filesystem::absolute(std::filesystem::path(expanded));
+                    cached = result;
+                    return result;
+                }
+            }
+        }
+
+        // 2) fallback nhanh: nếu exeDir là "bin", dùng parent; ngược lại dùng exeDir
+        if (exeDir.filename() == "bin") {
+            result = exeDir.parent_path();
+        } else {
+            result = exeDir;
+        }
+
+        // 3) nếu không tìm thấy stdlib trực tiếp ở root, có thể thử root/lib
+        cached = std::filesystem::absolute(result);
+        return *cached;
+    } catch (...) {
+        // fallback to current path nếu có gì sai
+        cached = std::filesystem::current_path();
+        return *cached;
+    }
+}
+
+
+static std::string platformLastError() {
+#if defined(_WIN32)
+    DWORD err = GetLastError();
+    if (!err) return "";
+    LPSTR msgBuf = nullptr;
+    FormatMessageA(FORMAT_MESSAGE_ALLOCATE_BUFFER | FORMAT_MESSAGE_FROM_SYSTEM | FORMAT_MESSAGE_IGNORE_INSERTS,
+                   nullptr, err, MAKELANGID(LANG_NEUTRAL, SUBLANG_DEFAULT),
+                   (LPSTR)&msgBuf, 0, nullptr);
+    std::string msg = msgBuf ? msgBuf : "";
+    if (msgBuf) LocalFree(msgBuf);
+    return msg;
+#else
+    const char* e = dlerror();
+    return e ? std::string(e) : std::string();
+#endif
+}
+
+// Trả về Expected<Module, Diagnostic> thay vì ném VMError
+Expected<Module, Diagnostic> ModuleManager::loadModule(const std::string& modulePath, const std::string& importerPath, Bool isBinary) {
+    // check cache by requested modulePath first
+    if (auto it = moduleCache.find(modulePath); it != moduleCache.end()) {
+        return it->second;
+    }
+
+#if defined(_WIN32)
+    std::string libExtension = ".dll";
+#elif defined(__APPLE__)
+    std::string libExtension = ".dylib";
+#else
+    std::string libExtension = ".so";
+#endif
+
+    auto resolveLibraryPath = [&](const std::string& modPath, const std::string& importer) -> std::string {
+        try {
+            std::filesystem::path candidate(modPath);
+            std::string ext = candidate.extension().string();
+
+            // if explicit meow/text/binary extension provided, don't try to treat as native library here
+            if (!ext.empty()) {
+                std::string extLower = ext;
+                for (char &c : extLower) c = (char)std::tolower((unsigned char)c);
+                if (extLower == ".meow" || extLower == ".meowb") {
+                    return "";
+                }
+            }
+
+            if (candidate.extension().empty()) {
+                candidate.replace_extension(libExtension);
+            }
+
+            if (candidate.is_absolute() && std::filesystem::exists(candidate)) {
+                return std::filesystem::absolute(candidate).lexically_normal().string();
+            }
+
+            std::filesystem::path stdlibRoot = detectStdlibRoot_cached();
+            std::filesystem::path stdlibPath = stdlibRoot / candidate;
+            if (std::filesystem::exists(stdlibPath)) {
+                return std::filesystem::absolute(stdlibPath).lexically_normal().string();
+            }
+
+            stdlibPath = stdlibRoot / "lib" / candidate;
+            if (std::filesystem::exists(stdlibPath)) {
+                return std::filesystem::absolute(stdlibPath).lexically_normal().string();
+            }
+
+            stdlibPath = stdlibRoot / "stdlib" / candidate;
+            if (std::filesystem::exists(stdlibPath)) {
+                return std::filesystem::absolute(stdlibPath).lexically_normal().string();
+            }
+
+            stdlibPath = stdlibRoot / "bin" / "stdlib" / candidate;
+            if (std::filesystem::exists(stdlibPath)) {
+                return std::filesystem::absolute(stdlibPath).lexically_normal().string();
+            }
+
+            stdlibPath = stdlibRoot / "bin" / candidate;
+            if (std::filesystem::exists(stdlibPath)) {
+                return std::filesystem::absolute(stdlibPath).lexically_normal().string();
+            }
+
+            // try parent/bin/stdlib as extra attempt
+            stdlibPath = std::filesystem::absolute(stdlibRoot / ".." / "bin" / "stdlib" / candidate);
+            if (std::filesystem::exists(stdlibPath)) {
+                return std::filesystem::absolute(stdlibPath).lexically_normal().string();
+            }
+
+            // try relative to importer
+            std::filesystem::path baseDir = (importer == entryPath)
+                ? std::filesystem::path(entryPath)
+                : std::filesystem::path(importer).parent_path();
+
+            std::filesystem::path relativePath = std::filesystem::absolute(baseDir / candidate);
+            if (std::filesystem::exists(relativePath)) {
+                return relativePath.lexically_normal().string();
+            }
+
+            return "";
+        } catch (...) {
+            return "";
+        }
+    };
+
+    // Try to resolve as native library first
+    std::string libPath = resolveLibraryPath(modulePath, importerPath);
+
+    if (!libPath.empty()) {
+        void* handle = nullptr;
+#if defined(_WIN32)
+        handle = (void*)LoadLibraryA(libPath.c_str());
+#else
+        dlerror();
+        handle = dlopen(libPath.c_str(), RTLD_LAZY);
+#endif
+        if (!handle) {
+            std::string detail = platformLastError();
+            Diagnostic d(RuntimeError::NativeLibraryLoadFailed, libPath, std::vector<std::string>{ libPath, detail });
+            return Expected<Module, Diagnostic>(d);
+        }
+
+        using NativeFunction = Module(*)(MeowEngine*);
+        NativeFunction factory = nullptr;
+
+#if defined(_WIN32)
+        FARPROC procAddress = GetProcAddress((HMODULE)handle, "CreateMeowModule");
+        if (procAddress == nullptr) {
+            std::string detail = platformLastError();
+            Diagnostic d(RuntimeError::NativeLibrarySymbolNotFound, libPath, std::vector<std::string>{ "CreateMeowModule", libPath, detail });
+            return Expected<Module, Diagnostic>(d);
+        }
+        factory = reinterpret_cast<NativeFunction>(procAddress);
+#else
+        dlerror();
+        void* sym = dlsym(handle, "CreateMeowModule");
+        const char* derr = dlerror();
+        if (sym == nullptr || derr != nullptr) {
+            std::string detail = platformLastError();
+            Diagnostic d(RuntimeError::NativeLibrarySymbolNotFound, libPath, std::vector<std::string>{ "CreateMeowModule", libPath, detail });
+            return Expected<Module, Diagnostic>(d);
+        }
+        factory = reinterpret_cast<NativeFunction>(sym);
+#endif
+
+        // call factory to create Module
+        Module nativeModule = nullptr;
+        try {
+            nativeModule = factory(engine);
+        } catch (...) {
+            // If factory throws, convert to Diagnostic
+            Diagnostic d(RuntimeError::NativeLibraryLoadFailed, libPath, std::vector<std::string>{ libPath, "factory-threw" });
+            return Expected<Module, Diagnostic>(d);
+        }
+
+        // cache both the requested modulePath and physical libPath
+        moduleCache[modulePath] = nativeModule;
+        moduleCache[libPath] = nativeModule;
+
+        return Expected<Module, Diagnostic>(nativeModule);
+    }
+
+    // Not native library (or not found as native). Resolve relative/absolute path for meow module
+    std::filesystem::path baseDir = (importerPath == entryPath)
+        ? std::filesystem::path(entryPath)
+        : std::filesystem::path(importerPath).parent_path();
+    std::filesystem::path resolvedPath = std::filesystem::absolute(baseDir / modulePath);
+    std::string absolutePath = resolvedPath.lexically_normal().string();
+
+    if (auto it = moduleCache.find(absolutePath); it != moduleCache.end()) {
+        return it->second;
+    }
+
+    // parse module (binary/text). Parsers now return Expected<Bool, Diagnostic>
+    std::unordered_map<std::string, Proto> protosLocal;
+    if (isBinary) {
+        // auto r = binaryParser.parseFile(absolutePath, *memoryManager);
+        // if (!r) {
+        //     // pass through the Diagnostic from parser but mark error kind as ModuleLoadFailed
+        //     Diagnostic diag = r.error();
+        //     // wrap/augment diag if desired; here we create a ModuleLoadFailed to be consistent
+        //     Diagnostic out(RuntimeError::ModuleLoadFailed, absolutePath, std::vector<std::string>{ absolutePath });
+        //     // Prefer the parser's detailed diag args if present
+        //     if (!diag.args.empty()) out.args = diag.args;
+        //     return Expected<Module, Diagnostic>(out);
+        // }
+        // protosLocal = binaryParser.protos;
+    } else {
+        auto r = textParser.parseFile(absolutePath, *memoryManager);
+        if (!r) {
+            Diagnostic diag = r.error();
+            Diagnostic out(RuntimeError::ModuleLoadFailed, absolutePath, std::vector<std::string>{ absolutePath });
+            if (!diag.args.empty()) out.args = diag.args;
+            return Expected<Module, Diagnostic>(out);
+        }
+        protosLocal = textParser.protos;
+    }
+
+    const std::string mainName = "@main";
+    auto pit = protosLocal.find(mainName);
+    if (pit == protosLocal.end()) {
+        Diagnostic d(RuntimeError::MissingMainFunction, absolutePath, std::vector<std::string>{ modulePath, mainName });
+        return Expected<Module, Diagnostic>(d);
+    }
+
+    // create module object
+    Module newModule = nullptr;
+    try {
+        newModule = memoryManager->newObject<ObjModule>(modulePath, absolutePath, isBinary);
+    } catch (...) {
+        // Diagnostic d(RuntimeError::ModuleLoadFailed, absolutePath, std::vector<std::string>{ "alloc-failed" });
+        // return Expected<Module, Diagnostic>(d);
+    }
+
+    // newModule->mainProto = pit->second;
+    newModule->setMain(pit->second);
+    // newModule->hasMain = true;
+
+    // import native "native" module globals if present
+    if (newModule->getName() != "native") {
+        auto itNative = moduleCache.find("native");
+        if (itNative != moduleCache.end()) {
+            for (const auto& [name, func] : itNative->second->globals) {
+                // newModule->globals[name] = func;
+                newModule->setGlobal(name, func);
+            }
+        }
+    }
+
+    // cache and return
+    moduleCache[absolutePath] = newModule;
+    return Expected<Module, Diagnostic>(newModule);
+}

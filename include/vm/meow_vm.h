@@ -2,6 +2,7 @@
 
 #include "common/pch.h"
 #include "core/value.h"
+#include "vm/meow_engine.h"
 
 struct VMError : public std::runtime_error {
     VMError(const std::string& message): std::runtime_error(message) {}
@@ -19,12 +20,11 @@ class MemoryManager;
 class ModuleManager;
 class OperatorDispatcher;
 
-
 /**
  * @class MeowVM
  * @brief MeowVM là phần quan trọng nhất của toàn bộ chương trình
  */
-class MeowVM {
+class MeowVM : MeowEngine {
 public:
     /**
      * @brief Khởi tạo MeowVM từ thư mục bắt đầu, và file khởi động, cùng với các tham số đầu vào
@@ -49,4 +49,9 @@ private:
 
     void prepare() noexcept;
     void run();
+
+
+    [[noreturn]] inline void newVMError(const std::string& message) {
+        throw VMError(message);
+    }
 };

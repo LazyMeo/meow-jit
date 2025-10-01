@@ -61,6 +61,10 @@ public:
         // Máy bạn nếu dùng big-endian có thể đảo ngược quá trình lại
     }
 
+    inline const uint8_t* get_code() const noexcept {
+        return code_.data();
+    }
+
     inline size_t add_constant(Value value) {
         constant_pool_.push_back(value);
         return constant_pool_.size() - 1;

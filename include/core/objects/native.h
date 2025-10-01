@@ -4,13 +4,13 @@
 #include "core/value.h"
 #include "core/meow_object.h"
 
+class MeowEngine;
 class ObjNativeFunction : public MeowObject {
-private:
-    class MeowEngine;
+public:
     using Arguments = const std::vector<Value>&;
     using NativeFnSimple = std::function<Value(Arguments)>;
     using NativeFnAdvanced = std::function<Value(MeowEngine*, Arguments)>;
-
+private:
     std::variant<NativeFnSimple, NativeFnAdvanced> function_;
 public:
     ObjNativeFunction(NativeFnSimple f) : function_(f) {}
