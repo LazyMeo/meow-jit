@@ -28,6 +28,7 @@ public:
     MemoryManager(std::unique_ptr<GarbageCollector> gc): gc_(std::move(gc)), gc_threshold_(1024), object_allocated_(0) {}
 
     Array new_array() noexcept;
+    String new_string(const char*) noexcept; // An idea to use String Interning
 
     inline void enable_gc() noexcept {
         gc_enabled_ = true;
