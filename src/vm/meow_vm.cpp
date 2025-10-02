@@ -6,7 +6,7 @@ MeowVM::MeowVM(const std::string& entry_point_directory, const std::string& entr
         args_.command_line_arguments_.push_back(argv[i]);
     }
     args_.entry_point_directory_ = entry_point_directory;
-    args_.entry_path = entry_path;
+    args_.entry_path_ = entry_path;
 }
 
 MeowVM::~MeowVM() = default;
@@ -29,7 +29,7 @@ MeowVM::MeowVM(const std::string& entry_point_directory, const std::string& entr
         args_.command_line_arguments_.push_back(argv[i]);
     }
     args_.entry_point_directory_ = entry_point_directory;
-    args_.entry_path = entry_path;
+    args_.entry_path_ = entry_path;
 }
 
 MeowVM::~MeowVM() = default;
@@ -44,11 +44,11 @@ void MeowVM::prepare() noexcept {
     mod_manager_ = std::make_unique<ModuleManager>();
     op_dispatcher_ = std::make_unique<OperatorDispatcher>(heap_.get());
 
-    String entry_path_obj = heap_->new_string(args_.entry_path.c_str());
+    String entry_path_obj = heap_->new_string(args_.entry_path_.c_str());
     Module entry_module = mod_manager_->load_module(entry_path_obj, nullptr, heap_.get(), this);
 
     if (!entry_module || !entry_module->is_has_main()) {
-        newVMError("Không thể tải entry point hoặc không tìm thấy hàm main.");
+        throwVMError("Không thể tải entry point hoặc không tìm thấy hàm main.");
     }
 
     Function main_closure = heap_->new_function(entry_module->get_main_proto());
@@ -126,7 +126,7 @@ void MeowVM::run() {
                 if (auto func = op_dispatcher_->find(op_code, left, right)) {
                     result = (*func)(left, right);
                 } else {
-                    newVMError("Phép toán nhị phân chưa được hỗ trợ");
+                    throwVMError("Phép toán nhị phân chưa được hỗ trợ");
                 }
                 REGISTER(r0) = result;
                 break;
@@ -141,7 +141,7 @@ void MeowVM::run() {
                 if (auto func = op_dispatcher_->find(op_code, value)) {
                     result = (*func)(value);
                 } else {
-                    newVMError("Phép toán một ngôi chưa được hỗ trợ");
+                    throwVMError("Phép toán một ngôi chưa được hỗ trợ");
                 }
                 REGISTER(dst) = result;
                 break;
@@ -154,7 +154,7 @@ void MeowVM::run() {
 
             default: {
                 frame->ip_ = ip;
-                newVMError("OpCode không xác định.");
+                throwVMError("OpCode không xác định.");
             }
         }
     }

@@ -2,7 +2,7 @@
 
 #include "common/pch.h"
 #include "core/objects/module.h"
-#include "common/type.h"
+#include "core/type.h"
 
 class MeowEngine;
 class MemoryManager;

@@ -2,12 +2,6 @@
 
 #include "common/pch.h"
 
-/**
- * @brief Chuyển từ utf-8 sang utf-32
- * @details Chuyển từ một chuỗi byte sang một chuỗi unicode
- * @param s Chuỗi utf-8 đầu vào để xử lí
- * @return Chuỗi utf-32 đã được xử lí
- */
 inline static std::u32string utf8_to_utf32(const std::string& s) noexcept {
     std::u32string out;
     const unsigned char* bytes = reinterpret_cast<const unsigned char*>(s.data());

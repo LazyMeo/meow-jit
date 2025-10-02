@@ -1,5 +1,5 @@
 #include "memory/memory_manager.h"
-#include "core/definition.h"
+#include "core/objects.h"
 
 MemoryManager::MemoryManager(std::unique_ptr<GarbageCollector> gc) 
     : gc_(std::move(gc)), gc_threshold_(1024), object_allocated_(0) {}

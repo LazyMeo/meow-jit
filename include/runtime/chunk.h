@@ -61,29 +61,21 @@ public:
         // Máy bạn nếu dùng big-endian có thể đảo ngược quá trình lại
     }
 
-    inline const uint8_t* get_code() const noexcept {
+    // --- Code buffer ---
+    [[nodiscard]] inline const uint8_t* get_code() const noexcept {
         return code_.data();
     }
+    [[nodiscard]] inline size_t get_code_size() const noexcept {  return code_.size();  }
+    [[nodiscard]] inline bool is_code_empty() const noexcept { return code_.empty(); }
 
-    inline size_t add_constant(Value value) {
+    // --- Constant pool ---
+    [[nodiscard]] inline size_t get_pool_size() const noexcept { return constant_pool_.size(); }
+    [[nodiscard]] inline bool is_pool_empty() const noexcept { return constant_pool_.empty(); }
+    [[nodiscard]] inline size_t add_constant(Value value) {
         constant_pool_.push_back(value);
         return constant_pool_.size() - 1;
     }
-    inline size_t get_code_size() const noexcept { 
-        return code_.size(); 
-    }
-    inline bool is_code_empty() const noexcept    {
-        return code_.empty();
-    }
-    inline size_t get_pool_size() const noexcept {
-        return constant_pool_.size();
-    }
-    inline bool is_pool_empty() const noexcept {
-        return constant_pool_.empty();
-    }
-    inline Value get_constant(size_t index) const noexcept { 
-        return constant_pool_[index]; 
-    }
+    [[nodiscard]] inline Value get_constant(size_t index) const noexcept { return constant_pool_[index]; }
 private:
     std::vector<uint8_t> code_;
     std::vector<Value> constant_pool_;

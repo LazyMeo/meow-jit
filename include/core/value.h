@@ -1,7 +1,7 @@
 #pragma once
 
 #include "common/pch.h"
-#include "common/type.h"
+#include "core/type.h"
 
 struct MeowObject;
 

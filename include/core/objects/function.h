@@ -4,7 +4,7 @@
 #include "core/value.h"
 #include "core/meow_object.h"
 #include "memory/gc_visitor.h"
-#include "common/type.h"
+#include "core/type.h"
 #include "runtime/chunk.h"
 
 struct UpvalueDesc {
@@ -34,6 +34,7 @@ public:
 };
 
 class BytecodeParser;
+
 class ObjFunctionProto : public MeowObject {
     friend class BytecodeParser; 
 private:

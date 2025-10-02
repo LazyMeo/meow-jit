@@ -5,6 +5,7 @@
 #include "core/meow_object.h"
 
 class MeowEngine;
+
 class ObjNativeFunction : public MeowObject {
 public:
     using Arguments = const std::vector<Value>&;
