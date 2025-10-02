@@ -49,7 +49,7 @@ public:
         // Nếu là little-endian thì viết ngược lại
         // Viết 0x34 trước, rồi viết 0x12
 
-        code_.push_back(static_cast<uint8_t>(address & 0xFF)); // Lấy trọn 1 byte cao rồi đẩy vào code
+        code_.push_back(static_cast<uint8_t>(address & 0xFF)); // Lấy trọn 1 byte thấp rồi đẩy vào code
         code_.push_back(static_cast<uint8_t>((address >> 8) & 0xFF)); // Dịch sang phải để lấy nốt 1 byte còn lại
         // Ví dụ cụ thể với 0x1234
         // Khi dùng address & 0xFF thì tức là ta lấy 1 byte thấp

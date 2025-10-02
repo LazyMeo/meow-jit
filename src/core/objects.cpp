@@ -1,4 +1,4 @@
-#include "core/definition.h"
+#include "core/objects.h"
 #include "memory/gc_visitor.h"
 
 void ObjArray::trace(GCVisitor& visitor) const noexcept {

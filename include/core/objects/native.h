@@ -13,18 +13,17 @@ public:
 private:
     std::variant<NativeFnSimple, NativeFnAdvanced> function_;
 public:
-    ObjNativeFunction(NativeFnSimple f) : function_(f) {}
-    ObjNativeFunction(NativeFnAdvanced f) : function_(f) {}
+    explicit ObjNativeFunction(NativeFnSimple f): function_(f) {}
+    explicit ObjNativeFunction(NativeFnAdvanced f): function_(f) {}
 
-    inline Value call(Arguments args) {
+    [[nodiscard]] inline Value call(Arguments args) {
         if (auto p = std::get_if<NativeFnSimple>(&function_)) {
             return (*p)(args);
         }
 
         return Value();
     }
-
-    inline Value call(MeowEngine* engine, Arguments args) {
+    [[nodiscard]] inline Value call(MeowEngine* engine, Arguments args) {
         if (auto p = std::get_if<NativeFnAdvanced>(&function_)) {
             return (*p)(engine, args);
         } else if (auto p = std::get_if<NativeFnSimple>(&function_)) {
