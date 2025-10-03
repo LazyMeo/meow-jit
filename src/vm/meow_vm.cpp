@@ -72,9 +72,7 @@ void MeowVM::interpret() {
 void MeowVM::run() {
     CallFrame* frame = context_->current_frame_;
     const uint8_t* ip = frame->ip_;
-        
     #define READ_BYTE() (*ip++)
-
     #define READ_SHORT() \
         ([&]() -> uint16_t { \
             uint8_t first_byte = READ_BYTE(); \
@@ -86,6 +84,7 @@ void MeowVM::run() {
         }())
 
     #define READ_CONSTANT() (frame->function_->get_proto()->get_chunk().get_constant(READ_SHORT()))
+
     #define REGISTER(idx) (context_->registers_[frame->start_reg_ + idx])
     #define CONSTANT(cidx) (frame->function_->get_proto()->get_chunk().get_constant(cidx))
 
@@ -119,7 +118,7 @@ void MeowVM::run() {
             case OpCode::BIT_XOR:
             case OpCode::LSHIFT:
             case OpCode::RSHIFT: {
-                uint16_t r0 = READ_SHORT(), r1 = READ_SHORT(), r2 = READ_SHORT();
+                uint16_t dst = READ_SHORT(), r1 = READ_SHORT(), r2 = READ_SHORT();
                 auto& right = REGISTER(r1);
                 auto& left = REGISTER(r2);
                 Value result;
@@ -128,7 +127,7 @@ void MeowVM::run() {
                 } else {
                     throwVMError("Phép toán nhị phân chưa được hỗ trợ");
                 }
-                REGISTER(r0) = result;
+                REGISTER(dst) = result;
                 break;
             }
 

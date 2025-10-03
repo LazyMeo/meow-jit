@@ -8,42 +8,54 @@
 
 class ObjHash : public MeowObject {
 private:
-    std::unordered_map<String, Value> fields_;
+    using key_type = String;
+    using value_type = Value;
+    using reference_type = value_type&;
+    using const_reference_type = const value_type&;
+    using map_type = std::unordered_map<key_type, value_type>;
+    map_type fields_;
 public:
-    // --- Constructors ---
-    explicit ObjHash(const std::unordered_map<String, Value>& fields): fields_(fields) {}
-    explicit ObjHash(std::unordered_map<String, Value>&& fields) noexcept: fields_(std::move(fields)) {}
+    // --- Constructors & destructor---
+    ObjHash() = default;
+    explicit ObjHash(const map_type& fields): fields_(fields) {}
+    explicit ObjHash(map_type&& fields) noexcept: fields_(std::move(fields)) {}
+
+    // --- Rule of 5 ---
+    ObjHash(const ObjHash&) = delete;
+    ObjHash(ObjHash&&) = delete;
+    ObjHash& operator=(const ObjHash&) = delete;
+    ObjHash& operator=(ObjHash&&) = delete;
+    ~ObjHash() override = default;
 
     // --- Iterator types ---
-    using Iterator = std::unordered_map<String, Value>::iterator;
-    using ConstIterator = std::unordered_map<String, Value>::const_iterator;
+    using iterator = map_type::iterator;
+    using const_iterator = map_type::const_iterator;
 
     // --- Lookup ---
 
     // Unchecked lookup. For performance-critical code
-    [[nodiscard]] inline const Value& get(String key) noexcept {
+    [[nodiscard]] inline const_reference_type get(key_type key) noexcept {
         return fields_[key];
     }
     // Unchecked lookup/update. For performance-critical code
-    template <typename T>
-    inline void set(String key, T&& value) noexcept {
+    template <typename T> inline void set(key_type key, T&& value) noexcept {
         fields_[key] = std::forward<T>(value);
     }
     // Checked lookup. Throws if key is not found
-    [[nodiscard]] inline const Value& at(String key) const {
+    [[nodiscard]] inline const_reference_type at(key_type key) const {
         return fields_.at(key);
     }
-    [[nodiscard]] inline bool has(String key) const { return fields_.find(key) != fields_.end(); }
+    [[nodiscard]] inline bool has(key_type key) const { return fields_.find(key) != fields_.end(); }
 
     // --- Capacity ---
     [[nodiscard]] inline size_t size() const noexcept { return fields_.size(); }
     [[nodiscard]] inline bool empty() const noexcept { return fields_.empty(); }
 
     // --- Iterators ---
-    inline Iterator begin() noexcept { return fields_.begin(); }
-    inline Iterator end() noexcept { return fields_.end(); }
-    inline ConstIterator begin() const noexcept { return fields_.begin(); }
-    inline ConstIterator end() const noexcept { return fields_.end();}
+    inline iterator begin() noexcept { return fields_.begin(); }
+    inline iterator end() noexcept { return fields_.end(); }
+    inline const_iterator begin() const noexcept { return fields_.begin(); }
+    inline const_iterator end() const noexcept { return fields_.end();}
 
     /// @brief Tracing all objects referenced
     void trace(GCVisitor& visitor) const noexcept override;
