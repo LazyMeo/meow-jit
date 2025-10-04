@@ -4,35 +4,39 @@
 #include "core/value.h"
 #include "core/meow_object.h"
 
-class MeowEngine;
+namespace meow::vm { class MeowEngine; }
 
-class ObjNativeFunction : public MeowObject {
-public:
-    using Arguments = const std::vector<Value>&;
-    using NativeFnSimple = std::function<Value(Arguments)>;
-    using NativeFnAdvanced = std::function<Value(MeowEngine*, Arguments)>;
-private:
-    std::variant<NativeFnSimple, NativeFnAdvanced> function_;
-public:
-    explicit ObjNativeFunction(NativeFnSimple f): function_(f) {}
-    explicit ObjNativeFunction(NativeFnAdvanced f): function_(f) {}
+namespace meow::core::objects {
+    class ObjNativeFunction : public MeowObject {
+    private:
+        using value_type = meow::core::Value;
+        using engine_type = meow::vm::MeowEngine;
+        using visitor_type = meow::memory::GCVisitor;
+    public:
+        using arguments = const std::vector<value_type>&;
+        using native_fn_simple = std::function<value_type(arguments)>;
+        using native_fn_double = std::function<value_type(engine_type*, arguments)>;
+    private:
+        std::variant<native_fn_simple, native_fn_double> function_;
+    public:
+        explicit ObjNativeFunction(native_fn_simple f): function_(f) {}
+        explicit ObjNativeFunction(native_fn_double f): function_(f) {}
 
-    [[nodiscard]] inline Value call(Arguments args) {
-        if (auto p = std::get_if<NativeFnSimple>(&function_)) {
-            return (*p)(args);
+        [[nodiscard]] inline value_type call(arguments args) {
+            if (auto p = std::get_if<native_fn_simple>(&function_)) {
+                return (*p)(args);
+            }
+            return value_type();
+        }
+        [[nodiscard]] inline value_type call(engine_type* engine, arguments args) {
+            if (auto p = std::get_if<native_fn_double>(&function_)) {
+                return (*p)(engine, args);
+            } else if (auto p = std::get_if<native_fn_simple>(&function_)) {
+                return (*p)(args);
+            }
+            return value_type();
         }
 
-        return Value();
-    }
-    [[nodiscard]] inline Value call(MeowEngine* engine, Arguments args) {
-        if (auto p = std::get_if<NativeFnAdvanced>(&function_)) {
-            return (*p)(engine, args);
-        } else if (auto p = std::get_if<NativeFnSimple>(&function_)) {
-            return (*p)(args);
-        }
-
-        return Value();
-    }
-
-    inline void trace([[maybe_unused]] GCVisitor& visitor) noexcept {}
-};
+        inline void trace(visitor_type&) noexcept {}
+    };
+}

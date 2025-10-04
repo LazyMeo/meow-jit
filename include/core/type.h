@@ -2,39 +2,43 @@
 
 #include "common/pch.h"
 
-struct ObjString;
-struct ObjArray;
-struct ObjHash;
-struct ObjClass;
-struct ObjInstance;
-struct ObjBoundMethod;
-struct ObjUpvalue;
-struct ObjFunctionProto;
-struct ObjNativeFunction;
-struct ObjClosure;
-struct ObjModule;
+namespace meow::core {
+    struct MeowObject;
 
-using String = const ObjString*;
-using Array = ObjArray*;
-using Hash = ObjHash*;
+    namespace objects {
+        struct ObjString;
+        struct ObjArray;
+        struct ObjHash;
+        struct ObjClass;
+        struct ObjInstance;
+        struct ObjBoundMethod;
+        struct ObjUpvalue;
+        struct ObjFunctionProto;
+        struct ObjNativeFunction;
+        struct ObjClosure;
+        struct ObjModule;
+    }
+    
+    using Array = objects::ObjArray*;
+    using String = const objects::ObjString*;
+    using Hash = objects::ObjHash*;
 
-using Instance = ObjInstance*;
-using Class = ObjClass*;
-using Upvalue = ObjUpvalue*;
-using NativeFn = ObjNativeFunction*;
-using Function = ObjClosure*;
-using Module = ObjModule*;
-using BoundMethod = ObjBoundMethod*;
-using Proto = ObjFunctionProto*;
+    using Instance = objects::ObjInstance*;
+    using Class = objects::ObjClass*;
+    using BoundMethod = objects::ObjBoundMethod*;
+    using Upvalue = objects::ObjUpvalue*;
+    using Proto = objects::ObjFunctionProto*;
+    using Function = objects::ObjClosure*;
+    using NativeFn = objects::ObjNativeFunction*;
+    using Module = objects::ObjModule*;
 
-struct MeowObject;
+    using Null = std::monostate;
+    using Bool = bool;
+    using Int = int64_t;
+    using Real = double;
+    using Object = MeowObject*;
 
-using Null = std::monostate;
-using Bool = bool;
-using Int = int64_t;
-using Real = double;
-using Object = MeowObject*;
-
-enum class ValueType : uint8_t {
-    Null, Int, Real, Bool, String, Array, Object, Upvalue, Function, Class, Instance, BoundMethod, Proto, NativeFn, TotalValueTypes
-};
+    enum class ValueType : uint8_t {
+        Null, Int, Real, Bool, String, Array, Object, Upvalue, Function, Class, Instance, BoundMethod, Proto, NativeFn, TotalValueTypes
+    };
+}

@@ -6,47 +6,56 @@
 #include "memory/gc_visitor.h"
 #include "core/type.h"
 
-class ObjModule : public MeowObject {
-private:
-    enum class State { EXECUTING, EXECUTED };
+namespace meow::core::objects {
+    class ObjModule : public MeowObject {
+    private:
+        using value_type = meow::core::Value;
+        using const_reference_type = const value_type&;
+        using string_type = meow::core::String;
+        using proto_type = meow::core::Proto;
+        using module_map = std::unordered_map<String, value_type>;
+        using visitor_type = meow::memory::GCVisitor;
 
-    std::unordered_map<String, Value> globals_;
-    std::unordered_map<String, Value> exports_;
-    String file_name_;
-    String file_path_;
-    Proto main_proto_;
+        enum class State { EXECUTING, EXECUTED };
 
-    State state;
-public:
+        module_map globals_;
+        module_map exports_;
+        string_type file_name_;
+        string_type file_path_;
+        proto_type main_proto_;
 
-    explicit ObjModule(String file_name, String file_path, Proto main_proto = nullptr) noexcept
-        : file_name_(file_name), file_path_(file_path), main_proto_(main_proto) {}
+        State state;
+    public:
 
-    // --- Globals ---
-    [[nodiscard]] inline Value get_global(String name) noexcept { return globals_[name]; }
-    [[nodiscard]] inline void set_global(String name, Value value) noexcept { globals_[name] = value; } 
-    [[nodiscard]] inline bool has_global(String name) { return globals_.find(name) != globals_.end(); }
+        explicit ObjModule(string_type file_name, string_type file_path, proto_type main_proto = nullptr) noexcept
+            : file_name_(file_name), file_path_(file_path), main_proto_(main_proto) {}
 
-    // --- Exports ---
-    [[nodiscard]] inline Value get_export(String name) noexcept { return exports_[name]; }
-    [[nodiscard]] inline void set_export(String name, Value value) noexcept { exports_[name] = value; }
-    [[nodiscard]] inline bool has_export(String name) { return exports_.find(name) != exports_.end(); }
+        // --- Globals ---
+        [[nodiscard]] inline const_reference_type get_global(string_type name) noexcept { return globals_[name]; }
+        [[nodiscard]] inline void set_global(string_type name, const_reference_type value) noexcept { globals_[name] = value; } 
+        [[nodiscard]] inline bool has_global(string_type name) { return globals_.find(name) != globals_.end(); }
 
-    // --- File info ---
-    inline String get_file_name() const noexcept { return file_name_; }
-    inline String get_file_path() const noexcept { return file_path_; }
+        // --- Exports ---
+        [[nodiscard]] inline const_reference_type get_export(string_type name) noexcept { return exports_[name]; }
+        [[nodiscard]] inline void set_export(string_type name, const_reference_type value) noexcept { exports_[name] = value; }
+        [[nodiscard]] inline bool has_export(string_type name) { return exports_.find(name) != exports_.end(); }
 
-    // --- Main proto ---
-    inline Proto get_main_proto() const noexcept { return main_proto_; }
-    inline void set_main_proto(Proto proto) noexcept { main_proto_ = proto; }
-    inline bool is_has_main() const noexcept { return main_proto_ != nullptr; }
+        // --- File info ---
+        inline string_type get_file_name() const noexcept { return file_name_; }
+        inline string_type get_file_path() const noexcept { return file_path_; }
 
-    // --- Execution state ---
-    inline void set_execution() noexcept { state = State::EXECUTING; }
-    inline void set_executed() noexcept { state = State::EXECUTED;}
-    [[nodiscard]] inline bool is_executing() const noexcept { return state == State::EXECUTING; }
-    [[nodiscard]] inline bool is_executed() const noexcept { return state == State::EXECUTED; }
+        // --- Main proto ---
+        inline proto_type get_main_proto() const noexcept { return main_proto_; }
+        inline void set_main_proto(proto_type proto) noexcept { main_proto_ = proto; }
+        inline bool is_has_main() const noexcept { return main_proto_ != nullptr; }
 
-    /// @brief Tracing all objects referenced
-    void trace(GCVisitor& visitor) const noexcept override;
-};
+        // --- Execution state ---
+        inline void set_execution() noexcept { state = State::EXECUTING; }
+        inline void set_executed() noexcept { state = State::EXECUTED;}
+        [[nodiscard]] inline bool is_executing() const noexcept { return state == State::EXECUTING; }
+        [[nodiscard]] inline bool is_executed() const noexcept { return state == State::EXECUTED; }
+
+        /// @brief Tracing all objects referenced
+        void trace(visitor_type& visitor) const noexcept override;
+    };
+}

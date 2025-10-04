@@ -1,9 +1,12 @@
 #pragma once
 
-struct GCVisitor;
-struct MeowObject {
-    virtual ~MeowObject() = default;
+namespace meow::memory { struct GCVisitor; }
 
-    /// @brief Tracing all objects referenced
-    virtual void trace(GCVisitor& visitor) const noexcept = 0;
-};
+namespace meow::core {
+    struct MeowObject {
+        virtual ~MeowObject() = default;
+
+        /// @brief Tracing all objects referenced
+        virtual void trace(meow::memory::GCVisitor& visitor) const noexcept = 0;
+    };
+}
