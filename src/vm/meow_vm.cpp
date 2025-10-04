@@ -75,12 +75,12 @@ void MeowVM::run() {
     #define READ_BYTE() (*ip++)
     #define READ_SHORT() \
         ([&]() -> uint16_t { \
-            uint8_t first_byte = READ_BYTE(); \
-            if ((first_byte & 0x80) == 0) { \
-                return first_byte; \
+            uint8_t low_byte = READ_BYTE(); \
+            if ((low_byte & 0x80) == 0) { \
+                return low_byte; \
             } \
-            uint8_t second_byte = READ_BYTE(); \
-            return static_cast<uint16_t>((first_byte & 0x7F) | (static_cast<uint16_t>(second_byte) << 7)); \
+            uint8_t high_byte = READ_BYTE(); \
+            return static_cast<uint16_t>((low_byte & 0x7F) | (static_cast<uint16_t>(high_byte) << 7)); \
         }())
 
     #define READ_CONSTANT() (frame->function_->get_proto()->get_chunk().get_constant(READ_SHORT()))
